@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
 
-const backend = process.env.BACKEND_URL?.trim();
+const backend =
+  process.env.BACKEND_URL?.trim() ||
+  (process.env.NODE_ENV !== "production" ? "http://127.0.0.1:8000" : "");
 
 if (!backend && process.env.NODE_ENV === "production") {
   throw new Error(
@@ -8,10 +10,11 @@ if (!backend && process.env.NODE_ENV === "production") {
   );
 }
 
+// /api/proxy uses app route handler (long timeout). Other /api routes use rewrites.
 const nextConfig: NextConfig = {
-  /**
-   * Rewrites /api/* to Express. BACKEND_URL is server-side only (not exposed to the browser).
-   */
+  experimental: {
+    proxyTimeout: Number(process.env.API_PROXY_TIMEOUT_MS) || 300_000,
+  },
   async rewrites() {
     if (!backend) {
       return [];

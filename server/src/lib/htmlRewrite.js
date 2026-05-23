@@ -1,17 +1,18 @@
 /**
- * Rewrites HTML/CSS/HLS/JS so every asset loads via /api/proxy/resource.
- * Fixes relative URLs (vd01ccf8fa2.variables.css) resolving to daddyproxy.com.
+ * Rewrites HTML/CSS/HLS/JS so assets load via /api/proxy/resource on the gateway origin.
  */
+const { proxySitePrefix } = require("./proxyPaths");
+const { buildServiceWorkerSource } = require("./proxyServiceWorker");
 
-/**
- * @param {string} documentUrl
- * @param {string} backendOrigin
- * @param {string} sessionId
- */
-function createResolver(documentUrl, backendOrigin, sessionId) {
-  const base = new URL(documentUrl);
+function proxyResourcePrefix(sessionId) {
   const sid = encodeURIComponent(sessionId);
-  const proxyPrefix = `${backendOrigin}/api/proxy/resource?session=${sid}&url=`;
+  return `/api/proxy/resource?session=${sid}&url=`;
+}
+
+function createResolver(documentUrl, sessionId, proxyBaseOrigin = "") {
+  const base = new URL(documentUrl);
+  const proxyPrefix = proxyResourcePrefix(sessionId);
+  const gatewayOrigin = (proxyBaseOrigin || "").replace(/\/$/, "");
 
   function proxyify(absUrl) {
     let u;
@@ -41,6 +42,14 @@ function createResolver(documentUrl, backendOrigin, sessionId) {
     return new URL(t, base).href;
   }
 
+  function resolveSitePath(pathPart, hash) {
+    const qIdx = pathPart.indexOf("?");
+    const pathname = qIdx >= 0 ? pathPart.slice(0, qIdx) : pathPart;
+    const search = qIdx >= 0 ? pathPart.slice(qIdx) : "";
+    const site = proxySitePrefix(sessionId);
+    return (gatewayOrigin ? gatewayOrigin : "") + site + pathname + search + hash;
+  }
+
   function resolveRef(raw) {
     const t = (raw ?? "").trim();
     if (
@@ -53,13 +62,49 @@ function createResolver(documentUrl, backendOrigin, sessionId) {
     ) {
       return t;
     }
-    if (t.startsWith(backendOrigin)) return t;
-
     const hashIdx = t.indexOf("#");
     const pathPart = hashIdx >= 0 ? t.slice(0, hashIdx) : t;
     const hash = hashIdx >= 0 ? t.slice(hashIdx) : "";
 
-    if (!pathPart || pathPart === "#") return t;
+    if (t.startsWith(proxyPrefix)) return t;
+    if (pathPart.startsWith(proxySitePrefix(sessionId))) {
+      return (gatewayOrigin ? gatewayOrigin : "") + pathPart + hash;
+    }
+    if (pathPart.startsWith("/api/proxy/site/")) {
+      return (gatewayOrigin ? gatewayOrigin : "") + pathPart + hash;
+    }
+    if (pathPart.startsWith("/api/proxy/resource?")) {
+      return (gatewayOrigin ? gatewayOrigin + pathPart : pathPart) + hash;
+    }
+    if (pathPart.startsWith("/") && !pathPart.startsWith("//") && !pathPart.startsWith("/api/")) {
+      try {
+        const abs = new URL(pathPart, base.origin).href;
+        if (/^https?:$/i.test(new URL(abs).protocol)) {
+          return resolveSitePath(pathPart, hash);
+        }
+      } catch {
+        /* fall through */
+      }
+    }
+    // Fix doubly-nested paths from earlier bad rewrites: /api/proxy/<session>/api/proxy/resource?...
+    const nested = pathPart.match(
+      /^\/api\/proxy\/[a-f0-9]+\/api\/proxy\/resource\?(.+)$/i,
+    );
+    if (nested) {
+      return (gatewayOrigin ? gatewayOrigin : "") + `/api/proxy/resource?${nested[1]}` + hash;
+    }
+    if (/^https?:\/\/[^/]+\/api\/proxy\/resource\?/i.test(pathPart)) {
+      try {
+        const u = new URL(pathPart);
+        const target = u.searchParams.get("url");
+        if (target) {
+          const fixed = proxyPrefix + encodeURIComponent(target);
+          return hash ? fixed + hash : fixed;
+        }
+      } catch {
+        /* ignore */
+      }
+    }
 
     try {
       const abs = toAbsoluteUrl(pathPart);
@@ -73,18 +118,53 @@ function createResolver(documentUrl, backendOrigin, sessionId) {
   return { resolveRef, proxyify, base };
 }
 
-/**
- * Runtime uses PAGE_BASE (real site URL), not document.baseURI (daddyproxy.com).
- */
-function buildProxyRuntimeScript(backendOrigin, sessionId, pageUrl) {
-  const O = JSON.stringify(backendOrigin);
-  const S = JSON.stringify(sessionId);
-  const B = JSON.stringify(pageUrl);
-  return `<script id="openrelay-proxy-runtime">(function(){var O=${O},S=${S},B=${B},P=O+"/api/proxy/resource?session="+encodeURIComponent(S)+"&url=",FX=/\\.(css|js|mjs|png|woff2?|svg|m3u8|ts|mp4|vtt)(\\?|$)/i;function abs(u){if(/^https?:\\/\\//i.test(u))return u;if(u.indexOf("//")===0)return"https:"+u;if(u.indexOf("/")<0&&FX.test(u))return new URL(u,B).href;if(/^[a-z0-9][-a-z0-9.]*\\.[a-z]{2,}(\\/|:)/i.test(u)&&!FX.test(u))return"https://"+u.replace(/^\\/+/, "");return new URL(u,B).href}function px(u){if(!u||typeof u!=="string")return u;if(/^(data:|blob:|javascript:|mailto:|tel:)/i.test(u))return u;if(u.indexOf(P)===0)return u;var h="";var p=u;var i=u.indexOf("#");if(i>=0){p=u.slice(0,i);h=u.slice(i)}if(!p)return u;try{var a=abs(p);if(!/^https?:/i.test(a))return u;return P+encodeURIComponent(a)+h}catch(e){return u}}var of=window.fetch;window.fetch=function(i,n){if(typeof i==="string")i=px(i);else if(i&&typeof i==="object"&&i.url)i=new Request(px(i.url),i);return of.call(this,i,n)};var xo=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u,a,b,c){return xo.call(this,m,px(u),a,b,c)};function ps(proto,attr){try{var d=Object.getOwnPropertyDescriptor(proto,attr);if(!d||!d.set)return;var s=d.set;d.set=function(v){return s.call(this,px(v))};Object.defineProperty(proto,attr,d)}catch(e){}}ps(HTMLImageElement.prototype,"src");ps(HTMLScriptElement.prototype,"src");ps(HTMLLinkElement.prototype,"href");ps(HTMLMediaElement.prototype,"src");ps(HTMLSourceElement.prototype,"src");ps(HTMLIFrameElement.prototype,"src");var sa=Element.prototype.setAttribute;Element.prototype.setAttribute=function(n,v){if(v&&typeof v==="string"&&/^(src|href|poster|action|data-src|data-href|data-url|data-poster)$/i.test(n))v=px(v);return sa.call(this,n,v)};var lc=document.createElement;document.createElement=function(tag){var el=lc.call(document,tag);if(tag&&/^(link|script|img|source|video|audio|iframe)$/i.test(tag)){var _sa=el.setAttribute;el.setAttribute=function(n,v){if(v&&typeof v==="string"&&/^(src|href|poster)$/i.test(n))v=px(v);return _sa.call(this,n,v)}}return el}})();</script>`;
+function stripBaseTags(html) {
+  return html.replace(/<base\b[^>]*>/gi, "");
 }
 
-function injectProxyRuntime(html, backendOrigin, sessionId, pageUrl) {
-  const tag = buildProxyRuntimeScript(backendOrigin, sessionId, pageUrl);
+/** Remove CSP/XFO meta, SRI integrity, and rewrite meta refresh targets (UV-style). */
+function stripSecurityMetaAndIntegrity(html, resolveRef) {
+  let out = html;
+  out = out.replace(
+    /<meta\b[^>]*(?:http-equiv|name)\s*=\s*["']?(?:content-security-policy|x-frame-options|x-content-type-options|referrer)[^>]*>/gi,
+    "",
+  );
+  out = out.replace(/\s+integrity\s*=\s*("([^"]*)"|'([^']*)'|[^\s>]+)/gi, "");
+  out = out.replace(/\s+crossorigin\s*=\s*("anonymous"|"use-credentials"|[^\s>]+)/gi, "");
+  if (resolveRef) {
+    out = out.replace(
+      /(<meta\b[^>]*http-equiv\s*=\s*["']?refresh["']?[^>]*content\s*=\s*["'])([^"']*)(["'][^>]*>)/gi,
+      (_m, pre, content, post) => {
+        const rewritten = content.replace(
+          /url\s*=\s*([^\s;]+)/gi,
+          (_u, rawUrl) => `url=${resolveRef(String(rawUrl).replace(/^['"]|['"]$/g, ""))}`,
+        );
+        return pre + rewritten + post;
+      },
+    );
+  }
+  return out;
+}
+
+function buildProxyRuntimeScript(gatewayOrigin, sessionId, pageUrl) {
+  const G = JSON.stringify((gatewayOrigin || "").replace(/\/$/, ""));
+  const S = JSON.stringify(sessionId);
+  const B = JSON.stringify(pageUrl);
+  let pageOrigin = "https://www.youtube.com";
+  try {
+    pageOrigin = new URL(pageUrl).origin;
+  } catch {
+    /* ignore */
+  }
+  const O = JSON.stringify(pageOrigin);
+  const SITE = JSON.stringify(proxySitePrefix(sessionId));
+  const swUrl = `${(gatewayOrigin || "").replace(/\/$/, "")}/sw.js?session=${encodeURIComponent(sessionId)}&origin=${encodeURIComponent(pageOrigin)}`;
+
+  return `<script id="openrelay-proxy-runtime">(function(){var G=${G},S=${S},B=${B},O=${O},SITE=${SITE},P="/api/proxy/resource?session="+encodeURIComponent(S)+"&url=";function gw(){return G?G:location.origin}function sitePx(path,search,hash){var p=path.startsWith("/")?path:"/"+path;return gw()+SITE+p+(search||"")+(hash||"")}function px(u){if(!u||typeof u!=="string")return u;if(/^(data:|blob:|javascript:|mailto:|tel:)/i.test(u))return u;if(u.indexOf(P)===0||u.indexOf(SITE)===0||(G&&u.indexOf(G+SITE)===0))return u;var h="";var p=u;var i=u.indexOf("#");if(i>=0){p=u.slice(0,i);h=u.slice(i)}try{var q="",path=p,search="";var qi=p.indexOf("?");if(qi>=0){path=p.slice(0,qi);search=p.slice(qi)}if(/^https?:\\/\\//i.test(path))return P+encodeURIComponent(path+search)+h;if(path.indexOf("//")===0)return P+encodeURIComponent("https:"+path+search)+h;if(path.indexOf("/api/proxy/")===0)return gw()+path+h;if(path.charAt(0)==="/"&&!path.startsWith("/api/"))return sitePx(path,search,h);var a=new URL(p,B).href;return P+encodeURIComponent(a)+h}catch(e){return u}}function fixWrongHost(u){if(!u||typeof u!=="string")return u;if(u.indexOf("/api/proxy/site/")>=0)return u;var o=gw();if(G&&u.indexOf(G+"/api/proxy/")===0)return u;if(/^\\/(s|yt|embed)\\//i.test(u)||u==="/sw.js"||u.indexOf("/youtubei/")===0)return sitePx(u.split("?")[0],u.indexOf("?")>=0?u.slice(u.indexOf("?")):"","");return px(u)}var of=window.fetch;window.fetch=function(i,n){if(typeof i==="string")i=fixWrongHost(i);else if(i&&typeof i==="object"&&i.url)i=new Request(fixWrongHost(i.url),i);return of.call(this,i,n)};var xo=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(m,u,a,b,c){return xo.call(this,m,fixWrongHost(u),a,b,c)};function ps(proto,attr){try{var d=Object.getOwnPropertyDescriptor(proto,attr);if(!d||!d.set)return;var s=d.set;d.set=function(v){return s.call(this,fixWrongHost(v))};Object.defineProperty(proto,attr,d)}catch(e){}}ps(HTMLImageElement.prototype,"src");ps(HTMLScriptElement.prototype,"src");ps(HTMLLinkElement.prototype,"href");ps(HTMLMediaElement.prototype,"src");ps(HTMLSourceElement.prototype,"src");ps(HTMLIFrameElement.prototype,"src");var sa=Element.prototype.setAttribute;Element.prototype.setAttribute=function(n,v){if(v&&typeof v==="string"&&/^(src|href|poster|action|data-src|data-href|data-url|data-poster)$/i.test(n))v=fixWrongHost(v);return sa.call(this,n,v)};if("serviceWorker" in navigator){navigator.serviceWorker.register(${JSON.stringify(swUrl)},{scope:"/api/proxy/"}).catch(function(){})}})();</script>`;
+}
+
+function injectProxyRuntime(html, gatewayOrigin, sessionId, pageUrl) {
+  const tag = buildProxyRuntimeScript(gatewayOrigin, sessionId, pageUrl);
   if (/<head[^>]*>/i.test(html)) {
     return html.replace(/<head([^>]*)>/i, `<head$1>${tag}`);
   }
@@ -94,8 +174,87 @@ function injectProxyRuntime(html, backendOrigin, sessionId, pageUrl) {
   return tag + html;
 }
 
-function rewriteCssDocument(css, cssFileUrl, backendOrigin, sessionId) {
-  const { resolveRef } = createResolver(cssFileUrl, backendOrigin, sessionId);
+const YOUTUBE_URL_IN_TEXT =
+  /https?:\/\/(?:[\w-]+\.)?(?:youtube\.com|googlevideo\.com|ytimg\.com|gstatic\.com|googleapis\.com|ggpht\.com)[^\s"'`)<\]]+/gi;
+const PROTO_REL_YOUTUBE =
+  /\/\/(?:[\w-]+\.)?(?:youtube\.com|googlevideo\.com|ytimg\.com|gstatic\.com)[^\s"'`)<\]]+/gi;
+const YT_RELATIVE_API = /(["'])(\/youtubei\/v1\/[^"']+)\1/gi;
+const YT_ROOT_PATH =
+  /(["'`])(\/(?:s|yt|embed|iframe_api|sw\.js|youtubei)[^"'`\\]*)\1/gi;
+const YT_IMPORT_PATH =
+  /import\s*\(\s*["'](\/[^"']+)["']\s*\)/gi;
+
+function rewriteYouTubeDocument(text, documentUrl, gatewayOrigin, sessionId) {
+  const { resolveRef } = createResolver(documentUrl, sessionId, gatewayOrigin);
+  let out = text;
+
+  out = out.replace(YOUTUBE_URL_IN_TEXT, (match) => resolveRef(match));
+  out = out.replace(PROTO_REL_YOUTUBE, (match) => resolveRef(`https:${match}`));
+
+  out = out.replace(YT_ROOT_PATH, (_m, quote, path) => `${quote}${resolveRef(path)}${quote}`);
+  out = out.replace(YT_IMPORT_PATH, (_m, path) => `import("${resolveRef(path)}")`);
+  out = out.replace(YT_RELATIVE_API, (_m, quote, path) => {
+    try {
+      const abs = new URL(path, "https://www.youtube.com").href;
+      return `${quote}${resolveRef(abs)}${quote}`;
+    } catch {
+      return `${quote}${path}${quote}`;
+    }
+  });
+
+  out = out.replace(
+    /https?:\\\/\\\/(?:www\.)?youtube\.com\\\/youtubei\\\/[^"'\\]+/gi,
+    (escaped) => {
+      const plain = escaped.replace(/\\\//g, "/");
+      return resolveRef(plain).replace(/\//g, "\\/");
+    },
+  );
+
+  out = out.replace(/https?:\/\/[^\s"'`)<\]]+/gi, (match) => resolveRef(match));
+
+  return out;
+}
+
+const LARGE_JS_FAST_REWRITE_BYTES = 2 * 1024 * 1024;
+
+function rewriteYouTubeDocumentFast(text, documentUrl, gatewayOrigin, sessionId) {
+  const { resolveRef } = createResolver(documentUrl, sessionId, gatewayOrigin);
+  return text.replace(
+    /https?:\/\/(?:[\w-]+\.)?(?:youtube\.com|googlevideo\.com|ytimg\.com|gstatic\.com|googleapis\.com|ggpht\.com)[^\s"'`)<\]]+/gi,
+    (match) => resolveRef(match),
+  );
+}
+
+function rewriteJsDocument(js, jsFileUrl, gatewayOrigin, sessionId) {
+  let hostname = "";
+  try {
+    hostname = new URL(jsFileUrl).hostname;
+  } catch {
+    /* ignore */
+  }
+  const isYt =
+    /youtube|googlevideo|ytimg|gstatic|ggpht/i.test(hostname) ||
+    /youtube|googlevideo|ytimg/i.test(jsFileUrl);
+  if (isYt) {
+    if (js.length >= LARGE_JS_FAST_REWRITE_BYTES) {
+      return rewriteYouTubeDocumentFast(js, jsFileUrl, gatewayOrigin, sessionId);
+    }
+    return rewriteYouTubeDocument(js, jsFileUrl, gatewayOrigin, sessionId);
+  }
+  const { resolveRef } = createResolver(jsFileUrl, sessionId, gatewayOrigin);
+  return js.replace(/https?:\/\/[^\s"'`)<\]]+/gi, (match) => resolveRef(match));
+}
+
+function rewriteJsonDocument(body, documentUrl, gatewayOrigin, sessionId) {
+  const { resolveRef } = createResolver(documentUrl, sessionId, gatewayOrigin);
+  return body.replace(
+    /https?:\/\/(?:[\w-]+\.)?(?:youtube\.com|googlevideo\.com|ytimg\.com|gstatic\.com|googleapis\.com)[^\s"',}\\]*/gi,
+    (match) => resolveRef(match),
+  );
+}
+
+function rewriteCssDocument(css, cssFileUrl, gatewayOrigin, sessionId) {
+  const { resolveRef } = createResolver(cssFileUrl, sessionId, gatewayOrigin);
   let out = css.replace(/@import\s+(?:url\s*\(\s*)?["']?([^"')]+)["']?\s*\)?/gi, (m, u) => {
     const r = resolveRef(u.trim());
     return m.replace(u, r);
@@ -108,8 +267,8 @@ function rewriteCssDocument(css, cssFileUrl, backendOrigin, sessionId) {
   return out;
 }
 
-function rewriteM3u8Playlist(text, playlistUrl, backendOrigin, sessionId) {
-  const { resolveRef } = createResolver(playlistUrl, backendOrigin, sessionId);
+function rewriteM3u8Playlist(text, playlistUrl, gatewayOrigin, sessionId) {
+  const { resolveRef } = createResolver(playlistUrl, sessionId, gatewayOrigin);
   return text
     .split(/\r?\n/)
     .map((line) => {
@@ -125,19 +284,14 @@ function rewriteM3u8Playlist(text, playlistUrl, backendOrigin, sessionId) {
     .join("\n");
 }
 
-/** Rewrite absolute https URLs inside proxied JS bundles. */
-function rewriteJsDocument(js, jsFileUrl, backendOrigin, sessionId) {
-  const { resolveRef } = createResolver(jsFileUrl, backendOrigin, sessionId);
-  return js.replace(/https?:\/\/[^\s"'`)<\]]+/gi, (match) => resolveRef(match));
-}
-
-function rewriteHtmlDocument(html, documentUrl, backendOrigin, sessionId) {
-  const { resolveRef } = createResolver(documentUrl, backendOrigin, sessionId);
+function rewriteHtmlDocument(html, documentUrl, gatewayOrigin, sessionId) {
+  const { resolveRef } = createResolver(documentUrl, sessionId, gatewayOrigin);
 
   const ATTRS =
     "src|href|poster|action|data-src|data-href|data-poster|data-url|data-lazy-src|data-original|content";
 
-  let out = html;
+  let out = stripBaseTags(html);
+  out = stripSecurityMetaAndIntegrity(out, resolveRef);
 
   out = out.replace(
     new RegExp(`\\b(${ATTRS})\\s*=\\s*"([^"]*)"`, "gi"),
@@ -165,16 +319,7 @@ function rewriteHtmlDocument(html, documentUrl, backendOrigin, sessionId) {
     return `url("${resolveRef(cleaned)}")`;
   });
 
-  out = out.replace(
-    /<link([^>]*?)href\s*=\s*"([^"]*)"([^>]*)>/gi,
-    (_m, pre, href, post) => `<link${pre}href="${resolveRef(href)}"${post}>`,
-  );
-  out = out.replace(
-    /<script([^>]*?)src\s*=\s*"([^"]*)"([^>]*)>/gi,
-    (_m, pre, src, post) => `<script${pre}src="${resolveRef(src)}"${post}>`,
-  );
-
-  out = injectProxyRuntime(out, backendOrigin, sessionId, documentUrl);
+  out = injectProxyRuntime(out, gatewayOrigin, sessionId, documentUrl);
   return out;
 }
 
@@ -183,6 +328,10 @@ module.exports = {
   rewriteCssDocument,
   rewriteM3u8Playlist,
   rewriteJsDocument,
+  rewriteYouTubeDocument,
+  rewriteJsonDocument,
   createResolver,
-  injectProxyRuntime,
+  proxyResourcePrefix,
+  stripBaseTags,
+  stripSecurityMetaAndIntegrity,
 };

@@ -1,60 +1,33 @@
 /**
- * IPRoyal-backed document & asset gateway.
+ * ProxySeller-backed document and asset gateway with cookie jar, header spoofing, and YouTube streaming.
  */
 const express = require("express");
-const { Readable } = require("node:stream");
-const { pipeline } = require("node:stream/promises");
 
 const env = require("../config/env");
 const sessions = require("../lib/sessions");
-const ipRoyal = require("../lib/ipRoyal");
-const {
-  rewriteCssDocument,
-  rewriteHtmlDocument,
-  rewriteM3u8Playlist,
-  rewriteJsDocument,
-} = require("../lib/htmlRewrite");
+const proxySeller = require("../lib/proxySeller");
+const { handleProxyPreflight, shouldStreamBinary } = require("../lib/upstreamHeaders");
+const proxyGateway = require("../lib/proxyGateway");
+const rewriteEngine = require("../lib/rewriteEngine");
+const { resolveSiteTargetUrl } = require("../lib/proxyPaths");
+const { buildServiceWorkerSource } = require("../lib/proxyServiceWorker");
+const youtubeLayer = require("../middleware/youtubeResourceProxy");
 
 const router = express.Router();
 
-const HOP_BY_HOP = new Set([
-  "connection",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailers",
-  "transfer-encoding",
-  "upgrade",
-]);
-
-const STREAMING_HEADER_ALLOW = new Set([
-  "content-type",
-  "content-length",
-  "content-range",
-  "accept-ranges",
-  "cache-control",
-  "etag",
-  "last-modified",
-  "expires",
-]);
+router.use((_req, res, next) => {
+  res.setHeader("Connection", "close");
+  next();
+});
 
 function backendOrigin() {
+  const frontend = env.frontendOrigins[0]?.replace(/\/$/, "");
+  if (frontend) return frontend;
   const base = env.publicApiUrl?.replace(/\/$/, "");
-  if (!base) throw new Error("API_PUBLIC_URL is not set on the server.");
+  if (!base) throw new Error("API_PUBLIC_URL or FRONTEND_URL must be set in server/.env.");
   return base;
 }
 
-function sessionPageContext(record) {
-  try {
-    const u = new URL(record.targetUrl);
-    return { referer: u.href, origin: u.origin };
-  } catch {
-    return { referer: record.targetUrl, origin: "" };
-  }
-}
-
-/** Tracking / broken template URLs — return empty 200 so the player does not retry forever. */
 function isNoiseUrl(url) {
   return (
     /googletagmanager\.com\/gtm\.js\?id=\$/i.test(url) ||
@@ -64,43 +37,78 @@ function isNoiseUrl(url) {
   );
 }
 
-function shouldSkipUpstreamHeader(lower, streaming = false) {
-  if (HOP_BY_HOP.has(lower)) return true;
-  if (lower === "set-cookie") return true;
-  if (lower.startsWith("content-security-policy")) return true;
-  if (streaming) return !STREAMING_HEADER_ALLOW.has(lower);
-  if (lower === "content-length") return true;
-  if (lower === "content-encoding") return true;
-  return false;
-}
-
-function applyUpstreamHeaders(res, upstream, { streaming = false } = {}) {
-  upstream.headers.forEach((value, key) => {
-    const lower = key.toLowerCase();
-    if (shouldSkipUpstreamHeader(lower, streaming)) return;
-    try {
-      res.setHeader(key, value);
-    } catch {
-      /* ignore */
-    }
-  });
-}
-
-function isTerminalHttpStatus(status) {
-  return status === 403 || status === 404;
-}
-
-const MAX_TEXT_BYTES = 15 * 1024 * 1024;
-
 async function bufferFromUpstream(upstream) {
+  if (upstream.stream) {
+    const chunks = [];
+    for await (const chunk of upstream.stream) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
+  }
   const raw = await upstream.arrayBuffer();
   return Buffer.from(raw);
 }
 
-/**
- * GET /api/proxy/resource?session=...&url=...
- */
-router.get("/resource", async (req, res, next) => {
+function absorbUpstreamCookies(sessionId, requestUrl, upstream) {
+  if (upstream.setCookies?.length) {
+    sessions.absorbSetCookies(sessionId, requestUrl, upstream.setCookies);
+  }
+}
+
+async function fetchForSession(sessionId, record, targetUrl, clientReq, opts = {}) {
+  const cookieHeader = sessions.getUpstreamCookieHeader(sessionId, targetUrl);
+  const headers = youtubeLayer.buildResourceUpstreamHeaders(clientReq, {
+    targetUrl,
+    pageUrl: record.targetUrl,
+    assetRequest: opts.assetRequest,
+    streamRequest: opts.streamRequest,
+    cookieHeader,
+  });
+
+  const method = (opts.method || clientReq?.method || "GET").toUpperCase();
+  const fetchOpts = { headers, stream: opts.stream, method };
+  if (method !== "GET" && method !== "HEAD" && clientReq?.body != null) {
+    fetchOpts.data =
+      Buffer.isBuffer(clientReq.body) || typeof clientReq.body === "string"
+        ? clientReq.body
+        : clientReq.body;
+  }
+
+  const upstream = await proxySeller.fetchThroughProxy(targetUrl, fetchOpts);
+
+  const finalUrl =
+    typeof upstream.url === "string" && upstream.url ? upstream.url : targetUrl;
+  absorbUpstreamCookies(sessionId, finalUrl, upstream);
+  return upstream;
+}
+
+router.options("/resource", (req, res) => handleProxyPreflight(req, res));
+router.options("/view", (req, res) => handleProxyPreflight(req, res));
+router.options("/stream-or-view", (req, res) => handleProxyPreflight(req, res));
+router.options("/site/:sessionId{/*path}", (req, res) => handleProxyPreflight(req, res));
+router.options("/sw.js", (req, res) => handleProxyPreflight(req, res));
+
+router.get("/sw.js", (req, res) => {
+  const sessionId = typeof req.query.session === "string" ? req.query.session : "";
+  const pageOrigin = typeof req.query.origin === "string" ? req.query.origin : "https://www.youtube.com";
+  if (!sessionId) {
+    res.status(400).type("text/plain").send("Missing session");
+    return;
+  }
+  const source = buildServiceWorkerSource({
+    gatewayOrigin: backendOrigin(),
+    sessionId,
+    pageOrigin,
+  });
+  res
+    .status(200)
+    .type("application/javascript")
+    .setHeader("Service-Worker-Allowed", "/")
+    .setHeader("Cache-Control", "no-store")
+    .send(source);
+});
+
+async function proxyResourceHandler(req, res, next) {
   const sessionId =
     typeof req.query.session === "string" ? req.query.session : "";
   const urlEnc = typeof req.query.url === "string" ? req.query.url : "";
@@ -131,11 +139,11 @@ router.get("/resource", async (req, res, next) => {
 
   const record = sessions.getSession(sessionId);
   if (!record) {
-    res.status(410).type("text/plain").send("Session expired or invalid.");
+    res.status(410).type("text/plain").send("Session expired or invalid. Unblock the site again.");
     return;
   }
 
-  if (!ipRoyal.isConfigured()) {
+  if (!proxySeller.isConfigured()) {
     res.status(503).type("text/plain").send("Proxy not configured.");
     return;
   }
@@ -150,127 +158,42 @@ router.get("/resource", async (req, res, next) => {
     return;
   }
 
-  const pageCtx = sessionPageContext(record);
-  const isPlaylist = /\.m3u8|\.mpd(\?|$)/i.test(targetUrl);
-  const isTs = /\.(ts|m4s)(\?|$)/i.test(targetUrl);
-  const useStream =
-    Boolean(req.headers.range) && /\.(mp4|webm)(\?|$)/i.test(targetUrl);
-
-  const upstreamHeaders = ipRoyal.buildUpstreamRequestHeaders(req, {
-    assetRequest: true,
-    streamRequest: useStream || isTs,
-    referer: pageCtx.referer,
-    origin: pageCtx.origin,
-  });
+  const hasRange = Boolean(req.headers.range);
+  const isGoogleVideo = youtubeLayer.youtubeProxy.isGoogleVideoStream(targetUrl);
+  const likelyStream =
+    youtubeLayer.mustStreamTarget(targetUrl, hasRange) ||
+    proxySeller.isStreamUrl(targetUrl) ||
+    shouldStreamBinary(targetUrl, "", hasRange);
 
   try {
-    const upstream = await ipRoyal.fetchThroughProxy(targetUrl, record.region, {
-      headers: upstreamHeaders,
-      stream: useStream,
+    const rewriteKind = rewriteEngine.detectRewriteKind("", targetUrl);
+    const upstream = await fetchForSession(sessionId, record, targetUrl, req, {
       assetRequest: true,
+      streamRequest: likelyStream,
+      stream: likelyStream && !rewriteKind,
+      method: req.method,
     });
 
-    if (upstream.ipRoyalRegion && upstream.ipRoyalRegion !== record.region) {
-      sessions.updateSessionRegion(sessionId, upstream.ipRoyalRegion);
-    }
-
-    if (isTerminalHttpStatus(upstream.status)) {
-      sessions.markResourceFailed(sessionId, targetUrl);
-      const buf = await bufferFromUpstream(upstream).catch(() => Buffer.alloc(0));
-      res.status(upstream.status);
-      applyUpstreamHeaders(res, upstream);
-      res.end(buf);
-      return;
-    }
-
-    if (!upstream.ok) {
-      if (upstream.status >= 502) {
-        sessions.markResourceFailed(sessionId, targetUrl);
-      }
-      const buf = await bufferFromUpstream(upstream).catch(() => Buffer.alloc(0));
-      res.status(upstream.status);
-      applyUpstreamHeaders(res, upstream, { streaming: Boolean(upstream.stream) });
-      if (upstream.stream && buf.length === 0) {
-        upstream.stream.pipe(res);
-        return;
-      }
-      res.end(buf);
-      return;
-    }
-
-    const contentType = upstream.headers.get("content-type") || "";
     const finalUrl =
       typeof upstream.url === "string" && upstream.url ? upstream.url : targetUrl;
-    const origin = backendOrigin();
+    const gatewayOrigin = backendOrigin();
 
-    const isM3u8 = isPlaylist || /mpegurl|m3u8/i.test(contentType);
-    const isHtml = /text\/html|application\/xhtml\+xml/i.test(contentType);
-    const isCss = /text\/css/i.test(contentType);
-    const isJs =
-      /javascript|\/json/i.test(contentType) || /\.js(\?|$)/i.test(targetUrl);
+    if (!upstream.ok && upstream.status >= 500) {
+      sessions.markResourceFailed(sessionId, targetUrl);
+    }
 
-    if (isM3u8) {
-      const buf = await bufferFromUpstream(upstream);
-      const text = buf.toString("utf8");
-      const rewritten = rewriteM3u8Playlist(text, finalUrl, origin, sessionId);
-      res.status(upstream.status);
-      res.setHeader("Content-Type", contentType || "application/vnd.apple.mpegurl");
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      res.send(rewritten);
+    if (isGoogleVideo && upstream.stream) {
+      await youtubeLayer.pipeVideoToClient(res, req, upstream);
       return;
     }
 
-    if (isHtml || isCss || isJs) {
-      const buf = await bufferFromUpstream(upstream);
-      if (buf.length > MAX_TEXT_BYTES) {
-        res.status(upstream.status);
-        applyUpstreamHeaders(res, upstream);
-        res.end(buf);
-        return;
-      }
-      const text = buf.toString("utf8");
-      let rewritten = text;
-      if (isHtml) {
-        rewritten = rewriteHtmlDocument(text, finalUrl, origin, sessionId);
-      } else if (isCss) {
-        rewritten = rewriteCssDocument(text, finalUrl, origin, sessionId);
-      } else {
-        rewritten = rewriteJsDocument(text, finalUrl, origin, sessionId);
-      }
-      res.status(upstream.status);
-      res.setHeader("Content-Type", contentType || "application/octet-stream");
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      res.send(rewritten);
-      return;
-    }
-
-    res.status(upstream.status);
-    applyUpstreamHeaders(res, upstream, { streaming: true });
-    res.setHeader("Access-Control-Allow-Origin", "*");
-
-    if (isTs || !useStream) {
-      const buf = await bufferFromUpstream(upstream);
-      if (isTs && !contentType) {
-        res.setHeader("Content-Type", "video/mp2t");
-      }
-      res.end(buf);
-      return;
-    }
-
-    if (upstream.stream) {
-      upstream.stream.on("error", () => {
-        if (!res.headersSent) res.status(502).end();
-      });
-      await pipeline(upstream.stream, res);
-      return;
-    }
-
-    if (upstream.body) {
-      await pipeline(Readable.fromWeb(upstream.body), res);
-      return;
-    }
-
-    res.end();
+    await proxyGateway.deliverResource(
+      res,
+      req,
+      upstream,
+      { targetUrl, finalUrl, gatewayOrigin, sessionId, hasRange },
+      () => bufferFromUpstream(upstream),
+    );
   } catch (err) {
     sessions.markResourceFailed(sessionId, targetUrl);
     if (!res.headersSent) {
@@ -282,7 +205,107 @@ router.get("/resource", async (req, res, next) => {
     }
     next(err);
   }
-});
+}
+
+router.get("/resource", proxyResourceHandler);
+router.post("/resource", proxyResourceHandler);
+
+async function proxySiteHandler(req, res, next) {
+  const sessionId = sessions.normalizeSessionId(
+    typeof req.params.sessionId === "string" ? req.params.sessionId : "",
+  );
+  const sitePath =
+    typeof req.params.path === "string"
+      ? req.params.path
+      : Array.isArray(req.params.path)
+        ? req.params.path.join("/")
+        : "";
+
+  if (!sessionId) {
+    res.status(400).type("text/plain").send("Missing session.");
+    return;
+  }
+
+  const record = sessions.getSession(sessionId);
+  if (!record) {
+    console.warn(
+      `[proxy/site] 410 session not found id=${sessionId.slice(0, 12)}… storeSize=${sessions.getStoreSize()} url=${req.originalUrl}`,
+    );
+    res.status(410).type("text/plain").send("Session expired or invalid. Unblock the site again.");
+    return;
+  }
+
+  if (!proxySeller.isConfigured()) {
+    res.status(503).type("text/plain").send("Proxy not configured.");
+    return;
+  }
+
+  const query = { ...req.query };
+  delete query.session;
+  const targetUrl = resolveSiteTargetUrl(record.targetUrl, sitePath, query);
+
+  if (isNoiseUrl(targetUrl)) {
+    res.status(204).end();
+    return;
+  }
+
+  if (sessions.isResourceBlocked(sessionId, targetUrl)) {
+    res.status(502).type("text/plain").send("Resource unavailable.");
+    return;
+  }
+
+  const hasRange = Boolean(req.headers.range);
+  const isGoogleVideo = youtubeLayer.youtubeProxy.isGoogleVideoStream(targetUrl);
+  const likelyStream =
+    youtubeLayer.mustStreamTarget(targetUrl, hasRange) ||
+    proxySeller.isStreamUrl(targetUrl) ||
+    shouldStreamBinary(targetUrl, "", hasRange);
+
+  try {
+    const rewriteKind = rewriteEngine.detectRewriteKind("", targetUrl);
+    const upstream = await fetchForSession(sessionId, record, targetUrl, req, {
+      assetRequest: true,
+      streamRequest: likelyStream,
+      stream: likelyStream && !rewriteKind,
+      method: req.method,
+    });
+
+    const finalUrl =
+      typeof upstream.url === "string" && upstream.url ? upstream.url : targetUrl;
+    const gatewayOrigin = backendOrigin();
+
+    if (!upstream.ok && upstream.status >= 500) {
+      sessions.markResourceFailed(sessionId, targetUrl);
+    }
+
+    if (isGoogleVideo && upstream.stream) {
+      await youtubeLayer.pipeVideoToClient(res, req, upstream);
+      return;
+    }
+
+    await proxyGateway.deliverResource(
+      res,
+      req,
+      upstream,
+      { targetUrl, finalUrl, gatewayOrigin, sessionId, hasRange },
+      () => bufferFromUpstream(upstream),
+    );
+  } catch (err) {
+    sessions.markResourceFailed(sessionId, targetUrl);
+    if (!res.headersSent) {
+      res
+        .status(502)
+        .type("text/plain")
+        .send(err instanceof Error ? err.message : "Proxy site error.");
+      return;
+    }
+    next(err);
+  }
+}
+
+router.get("/site/:sessionId", proxySiteHandler);
+router.get("/site/:sessionId/", proxySiteHandler);
+router.get("/site/:sessionId{/*path}", proxySiteHandler);
 
 async function streamSessionThroughProxy(req, res, next) {
   const sessionId =
@@ -291,56 +314,37 @@ async function streamSessionThroughProxy(req, res, next) {
   try {
     const record = sessions.getSession(sessionId);
     if (!record) {
-      res.status(410).type("text/plain").send("Session expired or invalid.");
+      res.status(410).type("text/plain").send("Session expired or invalid. Unblock the site again.");
       return;
     }
 
-    if (!ipRoyal.isConfigured()) {
+    if (!proxySeller.isConfigured()) {
       res.status(503).type("text/plain").send("Proxy not configured.");
       return;
     }
 
-    const pageCtx = sessionPageContext(record);
-    const upstream = await ipRoyal.fetchThroughProxy(record.targetUrl, record.region, {
-      headers: ipRoyal.buildUpstreamRequestHeaders(req, {
-        referer: pageCtx.referer,
-        origin: pageCtx.origin,
-      }),
+    const upstream = await fetchForSession(sessionId, record, record.targetUrl, req, {
+      assetRequest: false,
+      streamRequest: false,
+      stream: false,
     });
 
-    if (upstream.ipRoyalRegion && upstream.ipRoyalRegion !== record.region) {
-      sessions.updateSessionRegion(sessionId, upstream.ipRoyalRegion);
-    }
-
-    if (isTerminalHttpStatus(upstream.status)) {
-      res.status(upstream.status);
-      applyUpstreamHeaders(res, upstream);
-      res.end(await bufferFromUpstream(upstream));
-      return;
-    }
-
-    const contentType = upstream.headers.get("content-type") || "";
     const finalPageUrl =
       typeof upstream.url === "string" && upstream.url ? upstream.url : record.targetUrl;
-    const isHtml = /text\/html|application\/xhtml\+xml/i.test(contentType);
-
-    if (isHtml) {
-      const html = (await bufferFromUpstream(upstream)).toString("utf8");
-      const rewritten = rewriteHtmlDocument(
-        html,
-        finalPageUrl,
-        backendOrigin(),
+    const gatewayOrigin = backendOrigin();
+    await proxyGateway.deliverResource(
+      res,
+      req,
+      upstream,
+      {
+        targetUrl: finalPageUrl,
+        finalUrl: finalPageUrl,
+        gatewayOrigin,
         sessionId,
-      );
-      res.status(upstream.status);
-      res.setHeader("Content-Type", "text/html; charset=utf-8");
-      res.send(rewritten);
-      return;
-    }
-
-    res.status(upstream.status);
-    applyUpstreamHeaders(res, upstream);
-    res.end(await bufferFromUpstream(upstream));
+        hasRange: false,
+      },
+      () => bufferFromUpstream(upstream),
+    );
   } catch (err) {
     if (!res.headersSent) {
       res

@@ -82,14 +82,16 @@ API_PUBLIC_URL=https://YOUR_DOMAIN
 # Next.js origin(s) for CORS (comma-separated if multiple)
 FRONTEND_URL=https://YOUR_DOMAIN
 
-IPROYAL_HOST=unblocker.iproyal.com
-IPROYAL_PORT=12323
-IPROYAL_USERNAME=your_iproyal_username
-IPROYAL_PASSWORD=your_iproyal_password
-IPROYAL_SCHEME=http
-IPROYAL_TLS_INSECURE=true
-IPROYAL_MAX_RETRIES=3
-IPROYAL_REQUEST_TIMEOUT_MS=90000
+PROXYSELLER_HOST=148.113.49.124
+PROXYSELLER_HTTP_PORT=41093
+PROXYSELLER_SOCKS_PORT=51093
+PROXYSELLER_USERNAME=your_proxy_login
+PROXYSELLER_PASSWORD=your_proxy_password
+PROXYSELLER_SCHEME=http
+PROXYSELLER_AUTH_IP=your_server_public_ip
+PROXYSELLER_TLS_INSECURE=true
+PROXYSELLER_APPEND_COUNTRY=true
+PROXYSELLER_REQUEST_TIMEOUT_MS=90000
 ```
 
 **Rules**
@@ -98,13 +100,14 @@ IPROYAL_REQUEST_TIMEOUT_MS=90000
 |----------|--------|
 | `API_PUBLIC_URL` | `https://YOUR_DOMAIN` if Nginx serves `/api` on the same host, or `https://api.YOUR_DOMAIN` if API is on a subdomain |
 | `FRONTEND_URL` | `https://YOUR_DOMAIN` (must match the browser origin of the Next app) |
-| `IPROYAL_HOST` | `unblocker.iproyal.com` only (no `http://`) |
-| `IPROYAL_PORT` | `12323` for Web Unblocker |
+| `PROXYSELLER_HOST` | Proxy IP or hostname only (no `http://`) |
+| `PROXYSELLER_HTTP_PORT` | HTTP proxy port (e.g. `41093`) |
+| `PROXYSELLER_AUTH_IP` | Whitelist your VPS outbound IP in the ProxySeller dashboard |
 
 Proxy connection string (for reference):
 
 ```text
-http://IPROYAL_USERNAME:IPROYAL_PASSWORD@unblocker.iproyal.com:12323
+http://PROXYSELLER_USERNAME:PROXYSELLER_PASSWORD@PROXYSELLER_HOST:PROXYSELLER_HTTP_PORT
 ```
 
 ---
@@ -231,11 +234,12 @@ Open the site in a browser, submit a URL, and confirm the new tab loads `/api/pr
 
 ---
 
-## 8. IPRoyal proxy client (Phase 1 summary)
+## 8. ProxySeller proxy client
 
-- **Removed undici** — all proxy traffic uses **axios + `tunnel`** (keep-alive agents, desktop User-Agent, MITM TLS off).
+- All upstream traffic uses **axios + `tunnel`** (keep-alive agents, desktop User-Agent).
 - **Fallback:** `https-proxy-agent` if `tunnel` fails.
-- **Retries:** `IPROYAL_MAX_RETRIES` for `ECONNRESET` on protected sites.
+- **Geo:** optional `{login}_c_{CC}` suffix on ProxySeller username (`PROXYSELLER_APPEND_COUNTRY`).
+- **Assets:** HTML/CSS/JS/HLS/video via `/api/proxy/resource` with URL rewriting.
 
 ---
 
@@ -246,7 +250,7 @@ Open the site in a browser, submit a URL, and confirm the new tab loads `/api/pr
 | `API_PUBLIC_URL is not set` | Set in `server/.env`, restart `openrelay-api` |
 | CORS errors | `FRONTEND_URL` must exactly match the Next.js origin |
 | 404 on `/api/unblock` | Nginx `location /api/` → port `8000`, PM2 `openrelay-api` running |
-| `ECONNRESET` | Increase `IPROYAL_REQUEST_TIMEOUT_MS`, confirm `IPROYAL_TLS_INSECURE=true` |
+| `ECONNRESET` | Increase `PROXYSELLER_REQUEST_TIMEOUT_MS`, confirm `PROXYSELLER_TLS_INSECURE=true`, verify IP whitelist |
 | `next build` fails | Set `BACKEND_URL` in `.env.production` |
 
 ---

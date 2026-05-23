@@ -27,9 +27,8 @@ export function HeroSection() {
           </span>
         </h1>
         <p className="mx-auto mt-5 max-w-2xl text-pretty text-base leading-relaxed text-slate-400 sm:text-lg">
-          Paste any URL, choose a server region, and go. A clean, tech-forward
-          interface designed for speed and clarity—ready to wire up to your
-          proxy backend when you are.
+          Paste any URL and browse through an auto-rotating Thailand proxy.
+          Pages, scripts, and video streams are rewritten to load via your secure gateway.
         </p>
       </div>
     </section>

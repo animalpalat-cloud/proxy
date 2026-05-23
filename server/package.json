@@ -6,7 +6,7 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "node --watch src/index.js"
+    "dev": "node --watch-path=./src --watch src/index.js"
   },
   "engines": {
     "node": ">=18"
@@ -23,6 +23,7 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "https-proxy-agent": "^9.0.0",
+    "set-cookie-parser": "^2.7.1",
     "tunnel": "^0.0.6"
   },
   "author": "",

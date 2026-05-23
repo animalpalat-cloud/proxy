@@ -1,6 +1,9 @@
 /**
  * Centralized environment configuration.
- * Load .env before importing this module (see src/index.js).
+ * Requires ../loadEnv.js first (see src/index.js).
+ *
+ * Uses getters so values stay correct when node --watch restarts the entry
+ * file without clearing this module's cache.
  */
 
 function stripEnv(raw) {
@@ -20,7 +23,7 @@ function parseOrigins(raw) {
   return raw.split(",").map((o) => o.trim()).filter(Boolean);
 }
 
-function normalizeIproyalHost(raw) {
+function normalizeProxyHost(raw) {
   let h = stripEnv(raw);
   if (!h) return "";
   if (/^https?:\/\//i.test(h)) {
@@ -33,24 +36,41 @@ function normalizeIproyalHost(raw) {
   return h.replace(/\/+$/, "").trim();
 }
 
-const nodeEnv = process.env.NODE_ENV || "development";
-const isProduction = nodeEnv === "production";
+function readProxySellerTransport() {
+  const raw = (stripEnv(process.env.PROXYSELLER_TRANSPORT || "auto") || "auto").toLowerCase();
+  if (raw === "tunnel" || raw === "hpa") return raw;
+  return "auto";
+}
 
-const port = Number(stripEnv(process.env.PORT || "")) || 8000;
-const bindHost = stripEnv(process.env.BIND_HOST) || "127.0.0.1";
+function readProxySeller() {
+  return {
+    host: normalizeProxyHost(process.env.PROXYSELLER_HOST),
+    port: Number(stripEnv(process.env.PROXYSELLER_HTTP_PORT || "")) || 0,
+    socksPort: Number(stripEnv(process.env.PROXYSELLER_SOCKS_PORT || "")) || 0,
+    username: stripEnv(process.env.PROXYSELLER_USERNAME || ""),
+    password: stripEnv(process.env.PROXYSELLER_PASSWORD || ""),
+    scheme: (stripEnv(process.env.PROXYSELLER_SCHEME || "http") || "http").toLowerCase(),
+    authIp: stripEnv(process.env.PROXYSELLER_AUTH_IP || ""),
+    appendCountrySuffix: process.env.PROXYSELLER_APPEND_COUNTRY === "true",
+    regionFailover: false,
+    userAgent: stripEnv(process.env.PROXYSELLER_USER_AGENT || ""),
+    probeTimeoutMs: Number(process.env.PROXYSELLER_PROBE_TIMEOUT_MS) || 45_000,
+    requestTimeoutMs: Number(process.env.PROXYSELLER_REQUEST_TIMEOUT_MS) || 90_000,
+    retryDelayMs: Number(process.env.PROXYSELLER_RETRY_DELAY_MS) || 800,
+    tlsInsecure: process.env.PROXYSELLER_TLS_INSECURE !== "false",
+    transport: readProxySellerTransport(),
+    alpnHttp1Only: process.env.PROXYSELLER_ALPN_HTTP1_ONLY !== "false",
+    keepAlive: process.env.PROXYSELLER_KEEP_ALIVE !== "false",
+    debug: process.env.PROXY_DEBUG === "true",
+  };
+}
 
-const publicApiUrl = stripEnv(process.env.API_PUBLIC_URL || "");
-const frontendOrigins = parseOrigins(process.env.FRONTEND_URL);
-
-/**
- * Fail fast in production when public URLs are missing.
- */
 function assertProductionEnv() {
-  if (!isProduction) return;
+  if (process.env.NODE_ENV !== "production") return;
 
   const missing = [];
-  if (!publicApiUrl) missing.push("API_PUBLIC_URL");
-  if (frontendOrigins.length === 0) missing.push("FRONTEND_URL");
+  if (!stripEnv(process.env.API_PUBLIC_URL || "")) missing.push("API_PUBLIC_URL");
+  if (parseOrigins(process.env.FRONTEND_URL).length === 0) missing.push("FRONTEND_URL");
 
   if (missing.length > 0) {
     throw new Error(
@@ -60,30 +80,29 @@ function assertProductionEnv() {
 }
 
 module.exports = {
-  port,
-  bindHost,
-  publicApiUrl,
-  nodeEnv,
-  isProduction,
-  frontendOrigins,
-  assertProductionEnv,
-
-  iproyal: {
-    host: normalizeIproyalHost(process.env.IPROYAL_HOST),
-    port: Number(stripEnv(process.env.IPROYAL_PORT || "")) || 0,
-    username: stripEnv(process.env.IPROYAL_USERNAME || ""),
-    password: stripEnv(process.env.IPROYAL_PASSWORD || ""),
-    scheme: (stripEnv(process.env.IPROYAL_SCHEME || "http") || "http").toLowerCase(),
-    /** When true, username becomes user_country-xx (required for geo rotation on most plans). */
-    appendCountrySuffix: process.env.IPROYAL_APPEND_COUNTRY === "true",
-    /** Set IPROYAL_REGION_FAILOVER=false to disable multi-region rotation. */
-    regionFailover: process.env.IPROYAL_REGION_FAILOVER !== "false",
-    userAgent: stripEnv(process.env.IPROYAL_USER_AGENT || ""),
-    probeTimeoutMs: Number(process.env.IPROYAL_PROBE_TIMEOUT_MS) || 45_000,
-    requestTimeoutMs: Number(process.env.IPROYAL_REQUEST_TIMEOUT_MS) || 90_000,
-    /** Transport retries per region — keep at 1 to avoid loops. */
-    maxRetries: 1,
-    retryDelayMs: Number(process.env.IPROYAL_RETRY_DELAY_MS) || 800,
-    tlsInsecure: process.env.IPROYAL_TLS_INSECURE !== "false",
+  get nodeEnv() {
+    return process.env.NODE_ENV || "development";
   },
+  get isProduction() {
+    return this.nodeEnv === "production";
+  },
+  get port() {
+    return Number(stripEnv(process.env.PORT || "")) || 8000;
+  },
+  get bindHost() {
+    return stripEnv(process.env.BIND_HOST) || "127.0.0.1";
+  },
+  get publicApiUrl() {
+    return stripEnv(process.env.API_PUBLIC_URL || "");
+  },
+  get frontendOrigins() {
+    return parseOrigins(process.env.FRONTEND_URL);
+  },
+  get proxySeller() {
+    return readProxySeller();
+  },
+  get proxyDebug() {
+    return process.env.PROXY_DEBUG === "true";
+  },
+  assertProductionEnv,
 };

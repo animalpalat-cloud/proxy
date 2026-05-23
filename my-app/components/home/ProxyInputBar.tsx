@@ -1,9 +1,5 @@
 "use client";
 
-/**
- * Posts to Express `POST /api/unblock`.
- * API base: NEXT_PUBLIC_API_URL or same-origin /api (see lib/api.ts).
- */
 import { type FormEvent, useCallback, useState } from "react";
 import {
   deriveViewerUrlFromSession,
@@ -11,19 +7,15 @@ import {
   normalizeViewerUrlForNewTab,
 } from "@/lib/api";
 
-export type ProxyRegion = "us" | "uk" | "de";
-
 export type ProxyNavigatePayload = {
   url: string;
-  region: ProxyRegion;
 };
 
-/** Successful JSON shape from the Express server (required fields) */
 export type UnblockSuccessData = {
   targetUrl: string;
   viewerUrl: string;
-  /** Present when API returns extended data; omitted with strict 2-field payload */
-  region?: string;
+  mode?: string;
+  proxyLabel?: string;
   sessionId?: string;
   proxyConfigured?: boolean;
 };
@@ -53,10 +45,24 @@ function errorMessageFallback(status: number): string {
   if (status === 404) {
     return "The unblock API was not found. Check that the API is running and NEXT_PUBLIC_API_URL / Nginx /api routing is correct.";
   }
+  if (status === 502) {
+    return "Could not reach the target through the proxy. Check ProxySeller credentials and IP whitelist.";
+  }
   if (status >= 500) {
     return "The server had a problem. Please try again in a moment.";
   }
   return `Something went wrong (HTTP ${status}).`;
+}
+
+/** Extract session id from /api/proxy/site/:id/ viewer URLs. */
+function sessionIdFromViewerUrl(href: string): string {
+  try {
+    const u = new URL(href, typeof window !== "undefined" ? window.location.origin : undefined);
+    const m = u.pathname.match(/\/api\/proxy\/site\/([^/]+)/i);
+    return m?.[1] ? decodeURIComponent(m[1]) : "";
+  } catch {
+    return "";
+  }
 }
 
 function extractApiError(body: unknown, status: number): string {
@@ -72,9 +78,6 @@ function extractApiError(body: unknown, status: number): string {
   return errorMessageFallback(status);
 }
 
-/**
- * Normalize backend JSON (handles minor key/shape drift).
- */
 function parseUnblockSuccess(body: unknown): UnblockSuccessData | null {
   if (body === null || body === undefined) return null;
 
@@ -101,10 +104,8 @@ function parseUnblockSuccess(body: unknown): UnblockSuccessData | null {
   if (!rawData || typeof rawData !== "object") return null;
   const d = rawData as Record<string, unknown>;
 
-  const targetUrl =
-    d.targetUrl ?? d.target_url ?? d.url;
-  let viewerUrl =
-    d.viewerUrl ?? d.viewer_url ?? d.gatewayUrl ?? d.proxyUrl;
+  const targetUrl = d.targetUrl ?? d.target_url ?? d.url;
+  let viewerUrl = d.viewerUrl ?? d.viewer_url ?? d.gatewayUrl ?? d.proxyUrl;
 
   const sessionIdRaw =
     typeof d.sessionId === "string"
@@ -113,12 +114,7 @@ function parseUnblockSuccess(body: unknown): UnblockSuccessData | null {
         ? d.session_id
         : undefined;
 
-  if (
-    targetUrl === undefined ||
-    targetUrl === null
-  ) {
-    return null;
-  }
+  if (targetUrl === undefined || targetUrl === null) return null;
 
   const ts = String(targetUrl).trim();
   if (!ts) return null;
@@ -137,15 +133,16 @@ function parseUnblockSuccess(body: unknown): UnblockSuccessData | null {
   return {
     targetUrl: ts,
     viewerUrl: vu,
-    region:
-      typeof d.region === "string"
-        ? d.region
-        : undefined,
+    mode: typeof d.mode === "string" ? d.mode : "auto",
+    proxyLabel:
+      typeof d.proxyLabel === "string"
+        ? d.proxyLabel
+        : "All Regions (auto)",
     sessionId: sessionIdRaw,
     proxyConfigured:
       typeof d.proxyConfigured === "boolean"
         ? d.proxyConfigured
-        : undefined,
+        : true,
   };
 }
 
@@ -154,7 +151,6 @@ export function ProxyInputBar({
   onUrlChange,
   onNavigate,
 }: ProxyInputBarProps) {
-  const [region, setRegion] = useState<ProxyRegion>("us");
   const [error, setError] = useState<string | null>(null);
   const [session, setSession] = useState<UnblockSuccessData | null>(null);
   const [serverMessage, setServerMessage] = useState<string | null>(null);
@@ -181,13 +177,13 @@ export function ProxyInputBar({
       setError(null);
       setIsSubmitting(true);
 
-      const payload: ProxyNavigatePayload = { url: trimmed, region };
+      const payload: ProxyNavigatePayload = { url: trimmed };
 
       try {
         const res = await fetch(getUnblockPostUrl(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: payload.url, region: payload.region }),
+          body: JSON.stringify({ url: payload.url }),
         });
 
         const contentType = res.headers.get("content-type") || "";
@@ -215,7 +211,7 @@ export function ProxyInputBar({
         if (body === null || body === undefined) {
           setError(
             `Received an empty response (Content-Type: ${contentType || "unknown"}). ` +
-              `Ensure the Express API is running and BACKEND_URL / NEXT_PUBLIC_API_URL are set (see DEPLOYMENT.md).`,
+              `Ensure the Express API is running and BACKEND_URL is set (see DEPLOYMENT.md).`,
           );
           return;
         }
@@ -234,17 +230,18 @@ export function ProxyInputBar({
           return;
         }
 
-        const raw = parsedSuccess;
         const data: UnblockSuccessData = {
-          targetUrl: raw.targetUrl,
-          viewerUrl: normalizeViewerUrlForNewTab(raw.viewerUrl),
-          region: raw.region ?? region,
-          proxyConfigured: raw.proxyConfigured ?? true,
+          targetUrl: parsedSuccess.targetUrl,
+          viewerUrl: normalizeViewerUrlForNewTab(parsedSuccess.viewerUrl),
+          mode: parsedSuccess.mode ?? "auto",
+          proxyLabel: parsedSuccess.proxyLabel ?? "All Regions (auto)",
+          proxyConfigured: parsedSuccess.proxyConfigured ?? true,
           sessionId:
-            raw.sessionId ??
+            parsedSuccess.sessionId ??
+            sessionIdFromViewerUrl(parsedSuccess.viewerUrl) ??
             (() => {
               try {
-                const u = new URL(raw.viewerUrl);
+                const u = new URL(parsedSuccess.viewerUrl);
                 return u.searchParams.get("session") ?? "";
               } catch {
                 return "";
@@ -286,7 +283,7 @@ export function ProxyInputBar({
         setIsSubmitting(false);
       }
     },
-    [url, region, onNavigate],
+    [url, onNavigate],
   );
 
   const clearAlerts = () => {
@@ -309,7 +306,7 @@ export function ProxyInputBar({
             name="url"
             inputMode="url"
             autoComplete="url"
-            placeholder="https://example.com"
+            placeholder="https://tiktok.com or https://youtube.com"
             value={url}
             onChange={(e) => {
               onUrlChange(e.target.value);
@@ -321,35 +318,15 @@ export function ProxyInputBar({
           />
         </div>
 
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-stretch">
-          <div className="relative min-w-0 flex-1">
-            <label htmlFor="region" className="sr-only">
-              Server location
-            </label>
-            <select
-              id="region"
-              name="region"
-              value={region}
-              onChange={(e) => {
-                setRegion(e.target.value as ProxyRegion);
-                if (session) clearAlerts();
-                if (error) setError(null);
-              }}
-              disabled={isSubmitting}
-              className="w-full appearance-none rounded-xl border border-white/10 bg-slate-950/60 py-3.5 pl-4 pr-11 text-sm text-slate-100 outline-none ring-cyan-400/40 transition focus:border-cyan-500/50 focus:ring-2 disabled:pointer-events-none disabled:opacity-50"
-            >
-              <option value="us">🇺🇸 United States</option>
-              <option value="uk">🇬🇧 United Kingdom</option>
-              <option value="de">🇩🇪 Germany</option>
-            </select>
-            <span
-              className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400"
-              aria-hidden
-            >
-              <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-              </svg>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div
+            className="flex items-center gap-2 rounded-xl border border-cyan-500/25 bg-cyan-500/10 px-4 py-3 text-sm text-cyan-100"
+            role="status"
+          >
+            <span className="text-base" aria-hidden>
+              🌐
             </span>
+            <span>Thailand auto-rotating proxy (ProxySeller)</span>
           </div>
 
           <button
@@ -360,12 +337,7 @@ export function ProxyInputBar({
             {isSubmitting ? (
               <>
                 <Spinner />
-                <span className="flex flex-col items-start text-left leading-tight">
-                  <span>Contacting server…</span>
-                  <span className="text-[0.65rem] font-normal opacity-90">
-                    Waiting for relay
-                  </span>
-                </span>
+                <span>Contacting server…</span>
               </>
             ) : (
               <>
@@ -392,18 +364,12 @@ export function ProxyInputBar({
       {session && !error && (
         <div
           role="status"
-          className="mt-4 space-y-3 rounded-xl border border-cyan-500/25 bg-gradient-to-br from-cyan-500/10 to-emerald-500/5 px-4 py-4 text-sm shadow-inner shadow-cyan-500/10"
+          className="mt-4 space-y-3 rounded-xl border border-cyan-500/25 bg-gradient-to-br from-cyan-500/10 to-emerald-500/5 px-4 py-4 text-sm"
           aria-live="polite"
         >
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="font-semibold text-cyan-100">Session active</p>
-            <span
-              className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${
-                session.proxyConfigured !== false
-                  ? "border border-emerald-500/40 bg-emerald-500/15 text-emerald-200"
-                  : "border border-amber-500/35 bg-amber-500/10 text-amber-100"
-              }`}
-            >
+            <span className="rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-0.5 text-xs font-medium text-emerald-200">
               Proxy: {session.proxyConfigured !== false ? "configured" : "not connected"}
             </span>
           </div>
@@ -412,54 +378,25 @@ export function ProxyInputBar({
               role="alert"
               className="rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-100"
             >
-              <p className="font-medium text-amber-50">Pop-up blocked</p>
-              <p className="mt-1 text-amber-200/95">
-                Open the proxied page using the link below.
-              </p>
+              Pop-up blocked — use the link below to open the proxied page.
             </div>
           ) : null}
-          {serverMessage ? (
-            <p className="text-xs leading-relaxed text-slate-400">{serverMessage}</p>
-          ) : null}
-          <div className="flex flex-wrap gap-2">
-            <a
-              href={session.viewerUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-cyan-500/20 px-3 py-2 text-xs font-semibold text-cyan-100 ring-1 ring-cyan-500/40 transition hover:bg-cyan-500/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/50"
-            >
-              Open proxied page
-              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-              </svg>
-            </a>
-          </div>
-          <dl className="grid gap-2 text-xs text-slate-300 sm:grid-cols-2">
-            <div className="rounded-lg bg-slate-950/40 px-3 py-2 ring-1 ring-white/10 sm:col-span-2">
-              <dt className="font-medium uppercase tracking-wide text-slate-500">
-                Proxied viewer (IPRoyal)
-              </dt>
-              <dd className="mt-0.5 break-all font-mono text-[0.8rem] text-emerald-200/95">
-                {session.viewerUrl}
-              </dd>
-            </div>
+          <a
+            href={session.viewerUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 rounded-lg bg-cyan-500/20 px-3 py-2 text-xs font-semibold text-cyan-100 ring-1 ring-cyan-500/40"
+          >
+            Open proxied page
+          </a>
+          <dl className="grid gap-2 text-xs text-slate-300">
             <div className="rounded-lg bg-slate-950/40 px-3 py-2 ring-1 ring-white/10">
               <dt className="font-medium uppercase tracking-wide text-slate-500">Target</dt>
-              <dd className="mt-0.5 break-all font-mono text-[0.8rem] text-cyan-200/95">
-                {session.targetUrl}
-              </dd>
+              <dd className="mt-0.5 break-all font-mono text-cyan-200/95">{session.targetUrl}</dd>
             </div>
             <div className="rounded-lg bg-slate-950/40 px-3 py-2 ring-1 ring-white/10">
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Region</dt>
-              <dd className="mt-0.5 font-medium uppercase text-slate-100">
-                {session.region ?? "—"}
-              </dd>
-            </div>
-            <div className="sm:col-span-2 rounded-lg bg-slate-950/40 px-3 py-2 ring-1 ring-white/10">
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Session ID</dt>
-              <dd className="mt-0.5 break-all font-mono text-[0.8rem] text-slate-200">
-                {session.sessionId && session.sessionId.length > 0 ? session.sessionId : "—"}
-              </dd>
+              <dt className="font-medium uppercase tracking-wide text-slate-500">Proxy</dt>
+              <dd className="mt-0.5 text-slate-100">{session.proxyLabel ?? "All Regions (auto)"}</dd>
             </div>
           </dl>
         </div>
@@ -477,14 +414,7 @@ function Spinner() {
       viewBox="0 0 24 24"
       aria-hidden
     >
-      <circle
-        className="opacity-25"
-        cx="12"
-        cy="12"
-        r="10"
-        stroke="currentColor"
-        strokeWidth="4"
-      />
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
       <path
         className="opacity-75"
         fill="currentColor"

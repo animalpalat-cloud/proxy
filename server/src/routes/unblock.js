@@ -1,18 +1,11 @@
 const express = require("express");
 const env = require("../config/env");
-const { createSession } = require("../lib/sessions");
-const ipRoyal = require("../lib/ipRoyal");
+const sessions = require("../lib/sessions");
+const proxySeller = require("../lib/proxySeller");
+const { buildUpstreamRequestHeaders } = require("../lib/upstreamHeaders");
 
 const router = express.Router();
 
-const ALLOWED_REGIONS = new Set(["us", "uk", "gb", "de", "fr", "ca", "es"]);
-
-/**
- * Single exit point for JSON — avoids double-send & guarantees Content-Type.
- * @param {import("express").Response} res
- * @param {number} status
- * @param {Record<string, unknown>} payload
- */
 function sendJson(res, status, payload) {
   if (res.headersSent) {
     console.warn("[/api/unblock] Attempted to send after headers were already sent — skipping.");
@@ -21,25 +14,20 @@ function sendJson(res, status, payload) {
   res.status(status).type("application/json").json(payload);
 }
 
-/**
- * Public gateway URL where IPRoyal-backed content is streamed (new tab).
- * @param {string} sessionId
- * @returns {string}
- */
 function buildViewerUrl(sessionId) {
-  const base = env.publicApiUrl?.replace(/\/$/, "");
-  if (!base) {
-    throw new Error(
-      "API_PUBLIC_URL is not set. Set it in server/.env to the public URL of this API (see DEPLOYMENT.md).",
-    );
+  const id = sessions.normalizeSessionId(sessionId);
+  const sitePath = `/api/proxy/site/${id}/`;
+  const frontend = env.frontendOrigins[0]?.replace(/\/$/, "");
+  if (frontend) {
+    return `${frontend}${sitePath}`;
   }
-  return `${base}/api/proxy/stream-or-view?session=${encodeURIComponent(sessionId)}`;
+  const base = env.publicApiUrl?.replace(/\/$/, "");
+  if (base) {
+    return `${base}${sitePath}`;
+  }
+  return sitePath;
 }
 
-/**
- * @param {unknown} p
- * @returns {p is { success: true; data: { targetUrl: string; viewerUrl: string } }}
- */
 function isValidUnblockSuccess(p) {
   if (!p || typeof p !== "object") return false;
   const o = /** @type {Record<string, unknown>} */ (p);
@@ -47,14 +35,14 @@ function isValidUnblockSuccess(p) {
   const d = o.data;
   if (!d || typeof d !== "object") return false;
   const data = /** @type {Record<string, unknown>} */ (d);
-  return typeof data.targetUrl === "string" && typeof data.viewerUrl === "string";
+  return (
+    typeof data.targetUrl === "string" &&
+    typeof data.viewerUrl === "string" &&
+    typeof data.sessionId === "string" &&
+    data.sessionId.length > 0
+  );
 }
 
-/**
- * Normalize and validate a target URL from the client.
- * @param {unknown} raw
- * @returns {{ ok: true, url: string } | { ok: false, error: string }}
- */
 function parseTargetUrl(raw) {
   if (typeof raw !== "string" || !raw.trim()) {
     return { ok: false, error: "A target URL is required in the request body." };
@@ -84,17 +72,17 @@ function parseTargetUrl(raw) {
 
 /**
  * POST /api/unblock
- *
- * Body (JSON): { "url": "https://example.com", "region": "us" }
+ * Body (JSON): { "url": "https://example.com" }
  */
 router.post("/", async (req, res, next) => {
+  let sessionId = null;
+
   try {
     if (req.body === undefined || req.body === null || typeof req.body !== "object") {
-      console.log("[/api/unblock] Invalid or missing JSON body. Content-Type:", req.headers["content-type"]);
       return sendJson(res, 400, {
         success: false,
         error:
-          'Expected a JSON body. Send Content-Type: application/json with { "url": "...", "region": "us" }.',
+          'Expected a JSON body. Send Content-Type: application/json with { "url": "https://..." }.',
       });
     }
 
@@ -107,17 +95,11 @@ router.post("/", async (req, res, next) => {
       });
     }
 
-    const regionRaw = req.body.region;
-    const region =
-      typeof regionRaw === "string" && ALLOWED_REGIONS.has(regionRaw.toLowerCase())
-        ? regionRaw.toLowerCase()
-        : "us";
+    console.log("[/api/unblock] Incoming:", parsed.url, "| mode: auto (Thailand rotating)");
 
-    console.log("[/api/unblock] Incoming:", parsed.url, "region:", region);
-
-    const configCheck = ipRoyal.validateConfig();
+    const configCheck = proxySeller.validateConfig();
     if (!configCheck.ok) {
-      console.log("[/api/unblock] IPRoyal config invalid:", configCheck.details);
+      console.error("[/api/unblock] ProxySeller config invalid:", configCheck.details);
       return sendJson(res, 503, {
         success: false,
         error: configCheck.error,
@@ -125,73 +107,117 @@ router.post("/", async (req, res, next) => {
       });
     }
 
-    if (!env.publicApiUrl) {
+    if (!env.publicApiUrl && env.frontendOrigins.length === 0) {
       return sendJson(res, 503, {
         success: false,
-        error: "API_PUBLIC_URL is not configured on the server.",
-        details: ["Set API_PUBLIC_URL in server/.env to your public API base URL."],
+        error: "API_PUBLIC_URL or FRONTEND_URL must be set on the server.",
       });
     }
 
-    console.log(
-      "[/api/unblock] Proxy:",
-      ipRoyal.buildProxyUriForLog(region),
-      "| transport: tunnel+axios | TLS MITM:",
-      env.iproyal.tlsInsecure,
-    );
-    console.log("[/api/unblock] Probing target through IPRoyal…");
+    console.log("[/api/unblock] Proxy:", proxySeller.buildProxyUriForLog());
 
-    const probe = await ipRoyal.probeTarget(parsed.url, region);
+    sessionId = sessions.createSession({ targetUrl: parsed.url });
 
-    if (!probe.ok) {
-      console.log("[/api/unblock] Probe failed:", probe.message, probe.status ?? "");
+    const probeHeaders = buildUpstreamRequestHeaders(undefined, {
+      targetUrl: parsed.url,
+      pageUrl: parsed.url,
+      assetRequest: false,
+      streamRequest: false,
+      cookieHeader: sessions.getUpstreamCookieHeader(sessionId, parsed.url),
+    });
+
+    let probe;
+    try {
+      probe = await proxySeller.probeTarget(parsed.url, {
+        headers: probeHeaders,
+        onSetCookies: (url, cookies) => {
+          sessions.absorbSetCookies(sessionId, url, cookies);
+        },
+      });
+    } catch (probeErr) {
+      console.error("[/api/unblock] Probe threw:", probeErr);
+      sessions.deleteSession(sessionId);
+      sessionId = null;
+      const msg = probeErr instanceof Error ? probeErr.message : String(probeErr);
+      return sendJson(res, 502, {
+        success: false,
+        error: `Proxy probe failed: ${msg}`,
+        details:
+          process.env.NODE_ENV !== "production" && probeErr instanceof proxySeller.ProxyFetchError
+            ? probeErr.diagnostics
+            : undefined,
+      });
+    }
+
+    if (probe.ok && probe.softFail) {
+      console.log("[/api/unblock] Probe soft-pass (HTTP 403) — session kept");
+    } else if (!probe.ok) {
+      console.error("[/api/unblock] Probe failed:", probe.message, probe.status ?? "");
+      if (probe.diagnostics) {
+        console.error("[/api/unblock] Probe diagnostics:", JSON.stringify(probe.diagnostics));
+      }
+      sessions.deleteSession(sessionId);
+      sessionId = null;
+      const devDetails =
+        process.env.NODE_ENV !== "production" && probe.diagnostics
+          ? probe.diagnostics
+          : probe.status ?? probe.details;
       return sendJson(res, 502, {
         success: false,
         error:
           probe.message ||
-          "Could not load the target through IPRoyal. Check credentials, host/port, and network.",
-        details: probe.status ?? probe.details,
+          "Could not load the target through ProxySeller. Check credentials, host/port, and network.",
+        details: devDetails,
       });
     }
 
-    let sessionId;
-    try {
-      const stickyRegion = ipRoyal.normalizeRegionKey(probe.regionUsed || region);
-      sessionId = createSession({
-        targetUrl: parsed.url,
-        region: stickyRegion,
-      });
-    } catch (e) {
-      console.error("[/api/unblock] Session create failed:", e);
+    if (!sessions.hasSession(sessionId)) {
+      console.error("[/api/unblock] Session missing after successful probe — storeSize=", sessions.getStoreSize());
       return sendJson(res, 500, {
         success: false,
-        error: "Could not create a proxy session.",
+        error: "Session was not persisted. Restart may have cleared memory; try unblock again.",
       });
     }
 
     const viewerUrl = buildViewerUrl(sessionId);
 
-    /** @type {{ success: true; data: { targetUrl: string; viewerUrl: string } }} */
     const payload = {
       success: true,
       data: {
         targetUrl: String(parsed.url),
         viewerUrl: String(viewerUrl),
+        mode: "auto",
+        proxyLabel: "All Regions (Thailand auto-rotate)",
+        proxyConfigured: true,
+        sessionId,
       },
     };
 
     if (!isValidUnblockSuccess(payload)) {
-      console.error("[/api/unblock] Built payload failed validation:", payload);
+      console.error("[/api/unblock] Invalid success payload shape:", payload);
+      sessions.deleteSession(sessionId);
       return sendJson(res, 500, {
         success: false,
         error: "Internal error: invalid response shape.",
       });
     }
 
-    console.log("[/api/unblock] Success — viewerUrl:", viewerUrl);
+    console.log(
+      "[/api/unblock] Success — sessionId=",
+      sessionId.slice(0, 12) + "…",
+      "viewerUrl:",
+      viewerUrl,
+      "storeSize=",
+      sessions.getStoreSize(),
+    );
     return sendJson(res, 200, payload);
   } catch (error) {
-    if (error instanceof ipRoyal.ProxyConfigError) {
+    if (sessionId) {
+      sessions.deleteSession(sessionId);
+    }
+
+    if (error instanceof proxySeller.ProxyConfigError) {
+      console.error("[/api/unblock] ProxyConfigError:", error.message, error.details);
       return sendJson(res, 503, {
         success: false,
         error: error.message,
@@ -200,7 +226,11 @@ router.post("/", async (req, res, next) => {
     }
 
     const msg = error instanceof Error ? error.message : String(error);
-    console.error("[/api/unblock] IPRoyal error:", msg, error);
+    console.error("[/api/unblock] Unhandled error:", msg);
+    if (error instanceof Error && error.stack) {
+      console.error(error.stack);
+    }
+
     if (!res.headersSent) {
       return sendJson(res, 500, {
         success: false,
@@ -208,6 +238,10 @@ router.post("/", async (req, res, next) => {
           process.env.NODE_ENV === "production"
             ? "Unexpected server error."
             : msg || "Unexpected server error.",
+        details:
+          process.env.NODE_ENV !== "production" && error instanceof Error
+            ? { name: error.name, message: error.message }
+            : undefined,
       });
     }
     next(error);

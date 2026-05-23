@@ -1,17 +1,11 @@
 /**
  * Public API base URL resolution — no hardcoded hosts.
- *
- * Priority:
- * 1. NEXT_PUBLIC_API_URL (explicit public API origin)
- * 2. Browser same-origin (Nginx routes /api → Express)
- * 3. Relative paths for SSR / rewrites
  */
 
 function stripTrailingSlash(url: string): string {
   return url.replace(/\/$/, "");
 }
 
-/** Explicit API origin from env, or empty to use same-origin / relative paths. */
 export function getPublicApiOrigin(): string {
   const fromEnv =
     typeof process !== "undefined"
@@ -32,13 +26,29 @@ export function getUnblockPostUrl(): string {
 }
 
 /**
- * Force viewer / resource links to hit the public API host (new tab).
+ * Force viewer / resource links to hit the public gateway (new tab).
  */
 export function normalizeViewerUrlForNewTab(href: string): string {
+  const browserOrigin =
+    typeof window !== "undefined" ? stripTrailingSlash(window.location.origin) : "";
+
+  if (browserOrigin) {
+    try {
+      const u = new URL(href, browserOrigin);
+      if (u.pathname.includes("/api/proxy/")) {
+        return `${browserOrigin}${u.pathname}${u.search}${u.hash}`;
+      }
+    } catch {
+      if (href.startsWith("/api/proxy/")) {
+        return `${browserOrigin}${href}`;
+      }
+    }
+  }
+
   const backend = getPublicApiOrigin();
   if (!backend) {
     try {
-      const u = new URL(href, typeof window !== "undefined" ? window.location.origin : undefined);
+      const u = new URL(href, browserOrigin || undefined);
       return u.href;
     } catch {
       return href.startsWith("/") ? href : `/${href}`;
@@ -60,10 +70,10 @@ export function normalizeViewerUrlForNewTab(href: string): string {
 export function deriveViewerUrlFromSession(sessionId: string): string {
   const id = sessionId.trim();
   if (!id) return "";
-  const qp = `session=${encodeURIComponent(id)}`;
+  const sitePath = `/api/proxy/site/${id}/`;
   const backend = getPublicApiOrigin();
   if (backend) {
-    return `${backend}/api/proxy/stream-or-view?${qp}`;
+    return `${backend}${sitePath}`;
   }
-  return `/api/proxy/stream-or-view?${qp}`;
+  return sitePath;
 }

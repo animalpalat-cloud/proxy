@@ -8,7 +8,7 @@ Express backend for the web proxy / unblocker. Runs separately from the Next.js 
 cd server
 npm install
 cp .env.example .env
-# Edit .env — add IPRoyal credentials (never commit .env)
+# Edit .env — add ProxySeller credentials (never commit .env)
 ```
 
 ## Run
@@ -28,20 +28,22 @@ Server: **http://localhost:8000**
 | Variable | Purpose |
 |----------|---------|
 | `FRONTEND_URL` | CORS: origin(s) of the Next.js app (e.g. `http://localhost:3000`) |
-| `API_PUBLIC_URL` | Full base URL browsers use to open the proxied tab (default `http://localhost:PORT`) |
-| `IPROYAL_HOST`, `IPROYAL_PORT`, `IPROYAL_USERNAME`, `IPROYAL_PASSWORD` | IPRoyal Web Unblocker endpoint |
-| `IPROYAL_SCHEME` | Usually `http` for the proxy URI to IPRoyal (default `http`) |
-| `IPROYAL_APPEND_COUNTRY` | `"true"` to append `_country-xx` to username for geo (maps `uk` → `gb`) |
+| `API_PUBLIC_URL` | Full base URL browsers use to open the proxied tab |
+| `PROXYSELLER_HOST`, `PROXYSELLER_HTTP_PORT`, `PROXYSELLER_USERNAME`, `PROXYSELLER_PASSWORD` | ProxySeller HTTP proxy endpoint |
+| `PROXYSELLER_SCHEME` | Usually `http` for the proxy URI (default `http`) |
+| `PROXYSELLER_APPEND_COUNTRY` | When not `false`, login becomes `{user}_c_{CC}` for geo (maps `uk` → `GB`) |
+| `PROXYSELLER_AUTH_IP` | Your VPS IP whitelisted in ProxySeller (reference; not sent in requests) |
 
-If `API_PUBLIC_URL` does not match where users load the API (e.g. tunneled host), the “open in new tab” link will be wrong — set it to the public origin of this server.
+If `API_PUBLIC_URL` does not match where users load the API, the “open in new tab” link will be wrong — set it to the public origin of this server.
 
 ## Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/health` | Liveness check |
-| POST | `/api/unblock` | Validate URL, probe target **via IPRoyal**, create session, return `viewerUrl` |
-| GET | `/api/proxy/view?session=<id>` | Stream the target page HTML/body through IPRoyal (browser opens this URL) |
+| POST | `/api/unblock` | Validate URL, probe target **via ProxySeller**, create session, return `viewerUrl` |
+| GET | `/api/proxy/view?session=<id>` | Stream the target page through ProxySeller (browser opens this URL) |
+| GET | `/api/proxy/resource?session=<id>&url=<encoded>` | Proxied assets (CSS, JS, images, HLS, video segments) |
 
 ### POST `/api/unblock`
 
@@ -54,7 +56,7 @@ If `API_PUBLIC_URL` does not match where users load the API (e.g. tunneled host)
 }
 ```
 
-**Success (200)** — strict shape for the Next.js client:
+**Success (200)**
 
 ```json
 {
@@ -66,20 +68,16 @@ If `API_PUBLIC_URL` does not match where users load the API (e.g. tunneled host)
 }
 ```
 
-Open `viewerUrl` in a new tab to stream the page through IPRoyal (`GET /api/proxy/stream-or-view?session=…`; legacy alias: `/api/proxy/view`).
+Open `viewerUrl` in a new tab (`GET /api/proxy/stream-or-view?session=…`; legacy alias: `/api/proxy/view`).
 
 **Errors**
 
 - **400** — invalid or missing URL.
-- **502** — probe through IPRoyal failed (blocked site, bad credentials, timeout).
-- **503** — IPRoyal env variables not set.
-
-## Limitations
-
-- The viewer streams the **top-level document** only. Relative CSS/JS/images may still load from the original origins unless you add HTML/asset rewriting or a full MITM proxy in a later phase.
-- Do **not** disable TLS verification globally in production. Avoid `NODE_TLS_REJECT_UNAUTHORIZED=0` unless a vendor explicitly requires it for debugging.
+- **502** — probe through ProxySeller failed (blocked site, bad credentials, timeout).
+- **503** — ProxySeller env variables not set.
 
 ## Security
 
-- Store IPRoyal secrets only in `.env` on the server; rotate credentials if they were exposed.
+- Store ProxySeller secrets only in `.env` on the server; rotate credentials if they were exposed.
+- Whitelist your server’s outbound IP in the ProxySeller dashboard (`PROXYSELLER_AUTH_IP`).
 - Sessions expire after one hour (see `src/lib/sessions.js`).

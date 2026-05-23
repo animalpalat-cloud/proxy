@@ -5,6 +5,7 @@ const proxyViewRouter = require("./routes/proxyView");
 const { notFound } = require("./middleware/notFound");
 const { errorHandler } = require("./middleware/errorHandler");
 const env = require("./config/env");
+const { CORS_ALLOW_HEADERS } = require("./lib/upstreamHeaders");
 
 function createApp() {
   const app = express();
@@ -14,22 +15,33 @@ function createApp() {
   app.use(
     cors({
       origin(origin, callback) {
-        // Allow non-browser clients (curl, server-to-server) with no Origin header
         if (!origin) {
           return callback(null, true);
         }
         if (env.frontendOrigins.includes(origin)) {
           return callback(null, true);
         }
+        try {
+          const { hostname } = new URL(origin);
+          if (
+            !env.isProduction &&
+            (hostname === "localhost" || hostname === "127.0.0.1")
+          ) {
+            return callback(null, true);
+          }
+        } catch {
+          /* reject */
+        }
         return callback(null, false);
       },
       credentials: true,
-      methods: ["GET", "POST", "OPTIONS"],
-      allowedHeaders: ["Content-Type", "Authorization"],
+      methods: ["GET", "HEAD", "POST", "OPTIONS"],
+      allowedHeaders: CORS_ALLOW_HEADERS,
+      exposedHeaders: ["Content-Length", "Content-Range", "Accept-Ranges", "Content-Type"],
     }),
   );
 
-  app.use(express.json({ limit: "32kb" }));
+  app.use(express.json({ limit: "2mb" }));
 
   app.get("/", (_req, res) => {
     res.json({
@@ -44,7 +56,6 @@ function createApp() {
   });
 
   app.use("/api", apiRoutes);
-  // IPRoyal stream gateway (must match frontend: GET /api/proxy/stream-or-view?session=...)
   app.use("/api/proxy", proxyViewRouter);
 
   app.use(notFound);
