@@ -8,15 +8,22 @@
  */
 
 let initPromise: Promise<void> | null = null;
+let bareMuxBridgeInstalled = false;
 
-type BareMuxConnectionCtor = new (workerPath: string) => {
+type BareMuxConnectionInstance = {
   setTransport(path: string, args: unknown[]): Promise<void>;
+  getInnerPort(): Promise<MessagePort> | MessagePort;
 };
+
+type BareMuxConnectionCtor = new (workerPath: string) => BareMuxConnectionInstance;
 
 type BareMuxModule = {
   BareMuxConnection?: BareMuxConnectionCtor;
   default?: { BareMuxConnection?: BareMuxConnectionCtor };
 };
+
+const BARE_MUX_WORKER = "/baremux/worker.js";
+const BARE_CLIENT_MODULE = "/baremux/bare-client.mjs";
 
 async function loadBareMuxModule(): Promise<{ BareMuxConnection: BareMuxConnectionCtor }> {
   if (typeof window === "undefined") {
@@ -45,6 +52,40 @@ function bareServerUrl(): string {
   return new URL("/bare/", window.location.origin).href;
 }
 
+/** UV SW + bare-mux SharedWorker ask the page for the mux port via `{ type: "getPort" }`. */
+function installBareMuxServiceWorkerBridge(
+  connection: BareMuxConnectionInstance,
+): void {
+  if (bareMuxBridgeInstalled || typeof navigator === "undefined") return;
+  bareMuxBridgeInstalled = true;
+
+  navigator.serviceWorker.addEventListener("message", async (event: MessageEvent) => {
+    const data = event.data;
+    if (!data || typeof data !== "object") return;
+
+    if (data.type === "getPort" && data.port instanceof MessagePort) {
+      try {
+        const muxPort = await connection.getInnerPort();
+        data.port.postMessage(muxPort, [muxPort]);
+      } catch (err) {
+        console.error("bare-mux: failed to answer getPort", err);
+      }
+    }
+  });
+}
+
+async function notifyUltravioletServiceWorker(
+  registration: ServiceWorkerRegistration,
+  connection: BareMuxConnectionInstance,
+): Promise<void> {
+  const sw =
+    registration.active ?? registration.waiting ?? registration.installing;
+  if (!sw) return;
+
+  const muxPort = await connection.getInnerPort();
+  sw.postMessage({ __uv$type: "baremuxinit", port: muxPort }, [muxPort]);
+}
+
 export async function ensureUltravioletReady(): Promise<void> {
   if (typeof window === "undefined") return;
   if (!("serviceWorker" in navigator)) {
@@ -54,10 +95,12 @@ export async function ensureUltravioletReady(): Promise<void> {
 
   initPromise = (async () => {
     const { BareMuxConnection } = await loadBareMuxModule();
-    const connection = new BareMuxConnection("/baremux/worker.js");
-    await connection.setTransport("/baremux/bare-client.mjs", [bareServerUrl()]);
+    const connection = new BareMuxConnection(BARE_MUX_WORKER);
 
-    // Drop broken legacy registration that pointed directly at uv.sw.js (no bundle).
+    installBareMuxServiceWorkerBridge(connection);
+
+    await connection.setTransport(BARE_CLIENT_MODULE, [bareServerUrl()]);
+
     for (const reg of await navigator.serviceWorker.getRegistrations()) {
       if (!reg.scope.includes("/uv/service")) continue;
       const script =
@@ -70,21 +113,18 @@ export async function ensureUltravioletReady(): Promise<void> {
       }
     }
 
-    // Stock sw.js: importScripts uv.bundle.js (sets self.Ultraviolet) → config → uv.sw.js
     const registration = await navigator.serviceWorker.register("/uv/sw.js", {
       scope: "/uv/service/",
     });
     await navigator.serviceWorker.ready;
 
-    const notifyBareMux = () => {
-      if (registration.active) {
-        registration.active.postMessage({ type: "baremuxinit" });
-      }
-    };
-    notifyBareMux();
+    await notifyUltravioletServiceWorker(registration, connection);
+
     registration.addEventListener("updatefound", () => {
       registration.installing?.addEventListener("statechange", () => {
-        if (registration.active) notifyBareMux();
+        if (registration.active) {
+          void notifyUltravioletServiceWorker(registration, connection);
+        }
       });
     });
   })();

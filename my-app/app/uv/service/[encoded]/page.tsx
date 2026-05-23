@@ -26,7 +26,7 @@ export default function UvServicePage() {
         setStatus(`Loading ${target} through proxy…`);
         await ensureUltravioletReady();
         if (cancelled) return;
-        // First navigation may occur before the SW controls this scope — one reload fixes it.
+        // First visit: SW is not controlling yet — reload once so UV proxies the document.
         if (!navigator.serviceWorker.controller) {
           window.location.reload();
           return;
