@@ -1,16 +1,16 @@
 # OpenRelay — Ubuntu VPS deployment guide
 
-Deploy the **Express API** (port `8000`) and **Next.js** (port `3000`) behind **Nginx**, managed by **PM2**. All public URLs come from environment variables — no hardcoded domains in code.
+Deploy the **Rust Bare server** (port `8000`) and **Next.js + Ultraviolet** (port `3000`) behind **Nginx**, managed by **PM2**.
 
 ## Architecture
 
 ```text
 Internet → Nginx (:80/:443)
-            ├─ /        → Next.js (127.0.0.1:3000)
-            └─ /api/    → Express (127.0.0.1:8000)
+            ├─ /        → Next.js (127.0.0.1:3000) — UV static + UI
+            └─ /bare/   → rust-server (127.0.0.1:8000) — TompHTTP Bare v3 + SOCKS5
 ```
 
-Optional: API on `api.yourdomain.com` instead of `/api` on the main host.
+The legacy `server/` Express app is **not used** in this stack.
 
 ---
 
@@ -21,13 +21,16 @@ sudo apt update && sudo apt upgrade -y
 sudo apt install -y curl git nginx ufw build-essential
 ```
 
-### Install Node.js 20 LTS
+### Install Node.js 20 LTS and Rust
 
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
 node -v
 npm -v
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+rustc -V
 ```
 
 ### Install PM2 globally
@@ -55,43 +58,36 @@ cd /var/www
 sudo mkdir -p openrelay && sudo chown "$USER:$USER" openrelay
 cd openrelay
 git clone YOUR_REPO_URL .
-cd server && npm ci --omit=dev
+cd rust-server && cp .env.example .env && cargo build --release
 cd ../my-app && npm ci && npm run build
 cd ..
 ```
 
 ---
 
-## 3. Backend environment (`server/.env`)
+## 3. Rust Bare environment (`rust-server/.env`)
 
 ```bash
-cp server/.env.example server/.env
-nano server/.env
+cp rust-server/.env.example rust-server/.env
+nano rust-server/.env
 ```
 
 **Production template** (replace placeholders):
 
 ```env
-NODE_ENV=production
-PORT=8000
 BIND_HOST=127.0.0.1
+PORT=8000
+RUST_LOG=info,openrelay_bare=debug
 
-# Public URL users open in the browser for proxied pages
-API_PUBLIC_URL=https://YOUR_DOMAIN
-
-# Next.js origin(s) for CORS (comma-separated if multiple)
-FRONTEND_URL=https://YOUR_DOMAIN
+FRONTEND_ORIGINS=https://YOUR_DOMAIN,https://www.YOUR_DOMAIN
 
 PROXYSELLER_HOST=148.113.49.124
-PROXYSELLER_HTTP_PORT=41093
 PROXYSELLER_SOCKS_PORT=51093
 PROXYSELLER_USERNAME=your_proxy_login
 PROXYSELLER_PASSWORD=your_proxy_password
-PROXYSELLER_SCHEME=http
-PROXYSELLER_AUTH_IP=your_server_public_ip
-PROXYSELLER_TLS_INSECURE=true
-PROXYSELLER_APPEND_COUNTRY=true
-PROXYSELLER_REQUEST_TIMEOUT_MS=90000
+PROXY_REQUEST_TIMEOUT_SECS=120
+PROXY_CONNECT_TIMEOUT_SECS=30
+PROXY_RETRY_ON_RESET=true
 ```
 
 **Rules**

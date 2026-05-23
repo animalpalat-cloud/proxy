@@ -1,0 +1,108 @@
+use axum::{
+    body::Body,
+    extract::{Query, State},
+    http::{HeaderMap, Method, Request, StatusCode},
+    response::Response,
+};
+use futures_util::StreamExt;
+use serde::Deserialize;
+
+use crate::bare::headers::{
+    apply_bare_response_headers, build_upstream_headers, effective_response_status, parse_bare_request,
+};
+use crate::error::{AppError, AppResult};
+use crate::proxy::retry::{is_retryable_transport, with_reset_retry};
+use crate::state::AppState;
+
+#[derive(Debug, Deserialize)]
+pub struct CacheQuery {
+    pub cache: Option<String>,
+}
+
+pub async fn bare_v2_fetch(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+    Query(query): Query<CacheQuery>,
+    body: Request<Body>,
+) -> AppResult<Response> {
+    if !state.config.proxy_configured() {
+        return Err(AppError::ProxyNotConfigured);
+    }
+
+    let cache = query.cache.is_some();
+    let bare = parse_bare_request(&headers, cache)?;
+    let target = bare.target_url()?;
+    let upstream_headers = build_upstream_headers(&bare, &headers);
+
+    let body_bytes = if method == Method::GET || method == Method::HEAD {
+        None
+    } else {
+        let collected = axum::body::to_bytes(body.into_body(), usize::MAX)
+            .await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        if collected.is_empty() {
+            None
+        } else {
+            Some(collected)
+        }
+    };
+
+    let client = state.http_client.clone();
+    let proxy_cfg = state.config.proxy.clone();
+    let retry = proxy_cfg.retry_on_reset;
+    let delay = crate::proxy::client::retry_delay(&proxy_cfg);
+
+    let upstream = with_reset_retry(retry, delay, || {
+        let client = client.clone();
+        let method = method.clone();
+        let target = target.clone();
+        let upstream_headers = upstream_headers.clone();
+        let body_bytes = body_bytes.clone();
+        async move {
+            let mut req = client.request(method, &target).headers(upstream_headers);
+            if let Some(bytes) = body_bytes {
+                req = req.body(bytes);
+            }
+            req.send().await
+        }
+    })
+    .await
+    .map_err(|e| {
+        if is_retryable_transport(&e) {
+            AppError::Upstream(format!("upstream transport error: {e}"))
+        } else {
+            AppError::Upstream(e.to_string())
+        }
+    })?;
+
+    let status = upstream.status();
+    let status_code = status.as_u16();
+    let status_text = status
+        .canonical_reason()
+        .unwrap_or("OK")
+        .to_string();
+    let remote_headers = upstream.headers().clone();
+
+    let response_status =
+        StatusCode::from_u16(effective_response_status(&bare, status_code))
+            .unwrap_or(StatusCode::OK);
+
+    let mut out_headers = HeaderMap::new();
+    apply_bare_response_headers(
+        &bare,
+        status_code,
+        &status_text,
+        &remote_headers,
+        &mut out_headers,
+    );
+
+    let stream = upstream.bytes_stream().map(|chunk| {
+        chunk.map_err(|e| std::io::Error::other(e.to_string()))
+    });
+
+    let mut response = Response::new(Body::from_stream(stream));
+    *response.status_mut() = response_status;
+    response.headers_mut().extend(out_headers);
+    Ok(response)
+}

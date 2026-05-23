@@ -1,29 +1,17 @@
 "use client";
 
 import { type FormEvent, useCallback, useState } from "react";
-import {
-  deriveViewerUrlFromSession,
-  getUnblockPostUrl,
-  normalizeViewerUrlForNewTab,
-} from "@/lib/api";
+import { buildProxiedPath, normalizeTargetUrl } from "@/lib/uvCodec";
+import { ensureUltravioletReady } from "@/lib/ultraviolet";
 
 export type ProxyNavigatePayload = {
   url: string;
 };
 
-export type UnblockSuccessData = {
-  targetUrl: string;
-  viewerUrl: string;
-  mode?: string;
-  proxyLabel?: string;
-  sessionId?: string;
-  proxyConfigured?: boolean;
-};
-
 type ProxyInputBarProps = {
   url: string;
   onUrlChange: (value: string) => void;
-  onNavigate?: (payload: ProxyNavigatePayload & { response: UnblockSuccessData }) => void;
+  onNavigate?: (payload: ProxyNavigatePayload) => void;
 };
 
 function looksLikeUrl(raw: string): boolean {
@@ -38,133 +26,14 @@ function looksLikeUrl(raw: string): boolean {
   }
 }
 
-function errorMessageFallback(status: number): string {
-  if (status === 400) {
-    return "The server could not accept this request. Check the URL and try again.";
-  }
-  if (status === 404) {
-    return "The unblock API was not found. Check that the API is running and NEXT_PUBLIC_API_URL / Nginx /api routing is correct.";
-  }
-  if (status === 403) {
-    return "Access forbidden (403). Check ProxySeller IP whitelist on the VPS or target site blocking the proxy.";
-  }
-  if (status === 502) {
-    return "Could not reach the target through the proxy. Check ProxySeller credentials and IP whitelist.";
-  }
-  if (status >= 500) {
-    return "The server had a problem. Please try again in a moment.";
-  }
-  return `Something went wrong (HTTP ${status}).`;
-}
-
-/** Extract session id from /api/proxy/site/:id/ viewer URLs. */
-function sessionIdFromViewerUrl(href: string): string {
-  try {
-    const u = new URL(href, typeof window !== "undefined" ? window.location.origin : undefined);
-    const m = u.pathname.match(/\/api\/proxy\/site\/([^/]+)/i);
-    return m?.[1] ? decodeURIComponent(m[1]) : "";
-  } catch {
-    return "";
-  }
-}
-
-function extractApiError(body: unknown, status: number): string {
-  if (
-    body &&
-    typeof body === "object" &&
-    "error" in body &&
-    typeof (body as { error: unknown }).error === "string"
-  ) {
-    const msg = (body as { error: string }).error.trim();
-    if (msg) return msg;
-  }
-  return errorMessageFallback(status);
-}
-
-function parseUnblockSuccess(body: unknown): UnblockSuccessData | null {
-  if (body === null || body === undefined) return null;
-
-  let root: Record<string, unknown>;
-  if (typeof body === "string") {
-    try {
-      root = JSON.parse(body) as Record<string, unknown>;
-    } catch {
-      return null;
-    }
-  } else if (typeof body === "object") {
-    root = body as Record<string, unknown>;
-  } else {
-    return null;
-  }
-
-  const ok =
-    root.success === true ||
-    root.success === "true" ||
-    root.ok === true;
-  if (!ok) return null;
-
-  const rawData = root.data;
-  if (!rawData || typeof rawData !== "object") return null;
-  const d = rawData as Record<string, unknown>;
-
-  const targetUrl = d.targetUrl ?? d.target_url ?? d.url;
-  let viewerUrl = d.viewerUrl ?? d.viewer_url ?? d.gatewayUrl ?? d.proxyUrl;
-
-  const sessionIdRaw =
-    typeof d.sessionId === "string"
-      ? d.sessionId
-      : typeof d.session_id === "string"
-        ? d.session_id
-        : undefined;
-
-  if (targetUrl === undefined || targetUrl === null) return null;
-
-  const ts = String(targetUrl).trim();
-  if (!ts) return null;
-
-  let vu =
-    viewerUrl !== undefined && viewerUrl !== null
-      ? String(viewerUrl).trim()
-      : "";
-
-  if (!vu && sessionIdRaw) {
-    vu = deriveViewerUrlFromSession(sessionIdRaw);
-  }
-
-  if (!vu) return null;
-
-  return {
-    targetUrl: ts,
-    viewerUrl: vu,
-    mode: typeof d.mode === "string" ? d.mode : "auto",
-    proxyLabel:
-      typeof d.proxyLabel === "string"
-        ? d.proxyLabel
-        : "All Regions (auto)",
-    sessionId: sessionIdRaw,
-    proxyConfigured:
-      typeof d.proxyConfigured === "boolean"
-        ? d.proxyConfigured
-        : true,
-  };
-}
-
-export function ProxyInputBar({
-  url,
-  onUrlChange,
-  onNavigate,
-}: ProxyInputBarProps) {
+export function ProxyInputBar({ url, onUrlChange, onNavigate }: ProxyInputBarProps) {
   const [error, setError] = useState<string | null>(null);
-  const [session, setSession] = useState<UnblockSuccessData | null>(null);
-  const [serverMessage, setServerMessage] = useState<string | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const [popupBlocked, setPopupBlocked] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleSubmit = useCallback(
     async (e: FormEvent<HTMLFormElement>) => {
       e.preventDefault();
-      setSession(null);
-      setServerMessage(null);
       setPopupBlocked(false);
 
       const trimmed = url.trim();
@@ -180,107 +49,24 @@ export function ProxyInputBar({
       setError(null);
       setIsSubmitting(true);
 
-      const payload: ProxyNavigatePayload = { url: trimmed };
-
       try {
-        const res = await fetch(getUnblockPostUrl(), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: payload.url }),
-        });
+        const targetUrl = normalizeTargetUrl(trimmed);
+        await ensureUltravioletReady();
+        onNavigate?.({ url: targetUrl });
 
-        const contentType = res.headers.get("content-type") || "";
-        let body: unknown;
-        if (contentType.includes("application/json")) {
-          try {
-            body = await res.json();
-          } catch {
-            body = null;
-          }
-        } else {
-          try {
-            const text = await res.text();
-            body = text ? JSON.parse(text) : null;
-          } catch {
-            body = null;
-          }
-        }
-
-        if (!res.ok) {
-          setError(extractApiError(body, res.status));
-          return;
-        }
-
-        if (body === null || body === undefined) {
-          setError(
-            `Received an empty response (Content-Type: ${contentType || "unknown"}). ` +
-              `Ensure the Express API is running and BACKEND_URL is set (see DEPLOYMENT.md).`,
-          );
-          return;
-        }
-
-        const parsedSuccess = parseUnblockSuccess(body);
-        if (!parsedSuccess) {
-          const preview =
-            typeof body === "object"
-              ? JSON.stringify(body).slice(0, 280)
-              : String(body).slice(0, 280);
-          setError(
-            "Received an unexpected response from the server. Expected JSON: " +
-              `{ "success": true, "data": { "targetUrl": "...", "viewerUrl": "..." } }. ` +
-              (preview ? `Got: ${preview}` : ""),
-          );
-          return;
-        }
-
-        const data: UnblockSuccessData = {
-          targetUrl: parsedSuccess.targetUrl,
-          viewerUrl: normalizeViewerUrlForNewTab(parsedSuccess.viewerUrl),
-          mode: parsedSuccess.mode ?? "auto",
-          proxyLabel: parsedSuccess.proxyLabel ?? "All Regions (auto)",
-          proxyConfigured: parsedSuccess.proxyConfigured ?? true,
-          sessionId:
-            parsedSuccess.sessionId ??
-            sessionIdFromViewerUrl(parsedSuccess.viewerUrl) ??
-            (() => {
-              try {
-                const u = new URL(parsedSuccess.viewerUrl);
-                return u.searchParams.get("session") ?? "";
-              } catch {
-                return "";
-              }
-            })(),
-        };
-        setSession(data);
-        const topMessage =
-          typeof body === "object" &&
-          body !== null &&
-          "message" in body &&
-          typeof (body as { message: unknown }).message === "string"
-            ? (body as { message: string }).message
-            : null;
-        setServerMessage(topMessage);
-        onNavigate?.({ ...payload, response: data });
-
-        try {
-          const opened = window.open(
-            normalizeViewerUrlForNewTab(data.viewerUrl),
-            "_blank",
-            "noopener,noreferrer",
-          );
-          setPopupBlocked(!opened);
-        } catch {
-          setPopupBlocked(true);
+        const path = buildProxiedPath(targetUrl);
+        const opened = window.open(path, "_blank", "noopener,noreferrer");
+        setPopupBlocked(!opened);
+        if (!opened) {
+          window.location.assign(path);
         }
       } catch (cause) {
-        const isOffline =
-          cause instanceof TypeError &&
-          /fetch|failed|network/i.test(String(cause.message));
-
+        const msg =
+          cause instanceof Error ? cause.message : "Something went wrong while starting the proxy.";
         setError(
-          isOffline
-            ? "Unable to reach the API at /api/unblock. On the VPS: confirm PM2 is running the Express app on port 8000, Nginx routes location /api/ to 8000, and do not set NEXT_PUBLIC_API_URL to localhost (use https://daddyproxy.com or leave it unset)."
-            : "Something went wrong while contacting the server. Please try again.",
+          msg.includes("Service workers")
+            ? `${msg} Use HTTPS in production or Chromium for local testing.`
+            : msg,
         );
       } finally {
         setIsSubmitting(false);
@@ -288,13 +74,6 @@ export function ProxyInputBar({
     },
     [url, onNavigate],
   );
-
-  const clearAlerts = () => {
-    setError(null);
-    setSession(null);
-    setServerMessage(null);
-    setPopupBlocked(false);
-  };
 
   return (
     <div className="mx-auto w-full max-w-3xl rounded-2xl border border-white/10 bg-slate-900/50 p-4 shadow-xl shadow-black/30 backdrop-blur-md sm:p-5 md:max-w-4xl lg:backdrop-blur-xl">
@@ -314,7 +93,6 @@ export function ProxyInputBar({
             onChange={(e) => {
               onUrlChange(e.target.value);
               if (error) setError(null);
-              if (session) clearAlerts();
             }}
             disabled={isSubmitting}
             className="w-full rounded-xl border border-white/10 bg-slate-950/60 px-4 py-3.5 text-sm text-slate-100 placeholder:text-slate-500 shadow-inner outline-none ring-cyan-400/40 transition focus:border-cyan-500/50 focus:ring-2 disabled:pointer-events-none disabled:opacity-50"
@@ -329,7 +107,7 @@ export function ProxyInputBar({
             <span className="text-base" aria-hidden>
               🌐
             </span>
-            <span>Thailand auto-rotating proxy (ProxySeller)</span>
+            <span>Ultraviolet + ProxySeller SOCKS5</span>
           </div>
 
           <button
@@ -340,14 +118,14 @@ export function ProxyInputBar({
             {isSubmitting ? (
               <>
                 <Spinner />
-                <span>Contacting server…</span>
+                <span>Starting proxy…</span>
               </>
             ) : (
               <>
                 <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M14 5l7 7m0 0l-7 7m7-7H3" />
                 </svg>
-                Unblock Website
+                Open in proxy
               </>
             )}
           </button>
@@ -359,49 +137,17 @@ export function ProxyInputBar({
           role="alert"
           className="mt-4 rounded-lg border border-red-500/35 bg-red-500/10 px-4 py-3 text-sm text-red-100"
         >
-          <p className="font-medium text-red-50">Unable to unblock</p>
+          <p className="font-medium text-red-50">Unable to start proxy</p>
           <p className="mt-1 text-red-200/95">{error}</p>
         </div>
       )}
 
-      {session && !error && (
+      {popupBlocked && !error && (
         <div
-          role="status"
-          className="mt-4 space-y-3 rounded-xl border border-cyan-500/25 bg-gradient-to-br from-cyan-500/10 to-emerald-500/5 px-4 py-4 text-sm"
-          aria-live="polite"
+          role="alert"
+          className="mt-4 rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-100"
         >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="font-semibold text-cyan-100">Session active</p>
-            <span className="rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-0.5 text-xs font-medium text-emerald-200">
-              Proxy: {session.proxyConfigured !== false ? "configured" : "not connected"}
-            </span>
-          </div>
-          {popupBlocked ? (
-            <div
-              role="alert"
-              className="rounded-lg border border-amber-500/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-100"
-            >
-              Pop-up blocked — use the link below to open the proxied page.
-            </div>
-          ) : null}
-          <a
-            href={session.viewerUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 rounded-lg bg-cyan-500/20 px-3 py-2 text-xs font-semibold text-cyan-100 ring-1 ring-cyan-500/40"
-          >
-            Open proxied page
-          </a>
-          <dl className="grid gap-2 text-xs text-slate-300">
-            <div className="rounded-lg bg-slate-950/40 px-3 py-2 ring-1 ring-white/10">
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Target</dt>
-              <dd className="mt-0.5 break-all font-mono text-cyan-200/95">{session.targetUrl}</dd>
-            </div>
-            <div className="rounded-lg bg-slate-950/40 px-3 py-2 ring-1 ring-white/10">
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Proxy</dt>
-              <dd className="mt-0.5 text-slate-100">{session.proxyLabel ?? "All Regions (auto)"}</dd>
-            </div>
-          </dl>
+          Pop-up blocked — allow pop-ups for this site or use the address bar after submitting.
         </div>
       )}
     </div>

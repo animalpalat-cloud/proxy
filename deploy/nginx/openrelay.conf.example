@@ -9,7 +9,7 @@ upstream openrelay_next {
     keepalive 32;
 }
 
-upstream openrelay_api {
+upstream openrelay_bare {
     server 127.0.0.1:8000;
     keepalive 32;
 }
@@ -38,10 +38,12 @@ server {
         proxy_send_timeout 300s;
     }
 
-    # Express API (unblock + proxy stream)
-    location /api/ {
-        proxy_pass http://openrelay_api;
+    # Rust Bare server (Ultraviolet)
+    location /bare/ {
+        proxy_pass http://openrelay_bare;
         proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

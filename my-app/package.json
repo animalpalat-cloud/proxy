@@ -4,12 +4,17 @@
   "private": true,
   "scripts": {
     "clean": "node -e \"const fs=require('fs'); for (const p of ['.next','node_modules/.cache']) { try { fs.rmSync(p,{recursive:true,force:true}); console.log('removed',p); } catch(e) { console.warn(p,e.message); } }\"",
+    "copy-static": "node scripts/copy-static-assets.mjs",
+    "postinstall": "node scripts/copy-static-assets.mjs",
     "dev": "next dev --webpack",
-    "build": "next build --webpack",
+    "build": "npm run copy-static && next build --webpack",
     "start": "next start",
     "lint": "eslint"
   },
   "dependencies": {
+    "@mercuryworkshop/bare-mux": "^2.1.9",
+    "@titaniumnetwork-dev/ultraviolet": "^3.2.10",
+    "@tomphttp/bare-client": "^2.2.0-alpha",
     "next": "16.2.6",
     "react": "19.2.4",
     "react-dom": "19.2.4"

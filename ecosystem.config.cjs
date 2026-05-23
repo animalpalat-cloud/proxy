@@ -4,13 +4,14 @@
 module.exports = {
   apps: [
     {
-      name: "openrelay-api",
-      cwd: "./server",
-      script: "src/index.js",
+      name: "openrelay-bare",
+      cwd: "./rust-server",
+      script: "./run-release.sh",
+      interpreter: "bash",
       instances: 1,
       exec_mode: "fork",
       env: {
-        NODE_ENV: "production",
+        RUST_LOG: "info,openrelay_bare=debug",
       },
       max_memory_restart: "512M",
     },
