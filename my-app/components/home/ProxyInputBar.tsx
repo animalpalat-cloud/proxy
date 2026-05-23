@@ -45,6 +45,9 @@ function errorMessageFallback(status: number): string {
   if (status === 404) {
     return "The unblock API was not found. Check that the API is running and NEXT_PUBLIC_API_URL / Nginx /api routing is correct.";
   }
+  if (status === 403) {
+    return "Access forbidden (403). Check ProxySeller IP whitelist on the VPS or target site blocking the proxy.";
+  }
   if (status === 502) {
     return "Could not reach the target through the proxy. Check ProxySeller credentials and IP whitelist.";
   }

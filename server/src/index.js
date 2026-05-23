@@ -12,7 +12,8 @@ app.listen(env.port, env.bindHost, () => {
   const proxy = env.proxySeller;
   console.log(`OpenRelay API listening on ${env.bindHost}:${env.port}`);
   console.log(`Public API URL: ${base}`);
-  console.log(`CORS origins: ${env.frontendOrigins.join(", ") || "(none — set FRONTEND_URL)"}`);
+  const { getAllowedOrigins } = require("./lib/allowedOrigins");
+  console.log(`CORS allowed origins: ${[...getAllowedOrigins()].join(", ") || "(none — set FRONTEND_URL)"}`);
   console.log(`Health: ${base.replace(/\/$/, "")}/api/health`);
   console.log(
     `ProxySeller: ${proxy.host ? `${proxy.host}:${proxy.port}` : "(not configured — check server/.env)"}`,

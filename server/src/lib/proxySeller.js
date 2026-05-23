@@ -446,12 +446,40 @@ async function probeTarget(targetUrl, options = {}) {
       await cancelBody(res);
 
       if (res.status === 403) {
+        const finalUrl =
+          typeof res.url === "string" && res.url ? res.url : targetUrl;
+        let probeHost = "";
+        try {
+          probeHost = new URL(finalUrl).hostname.toLowerCase();
+        } catch {
+          /* ignore */
+        }
+        const proxyHost = (env.proxySeller.host || "").toLowerCase();
+        const isProxyGateway403 =
+          (proxyHost && probeHost === proxyHost) ||
+          /proxyseller|proxy-seller/i.test(probeHost);
+
+        if (isProxyGateway403) {
+          return {
+            ok: false,
+            status: 403,
+            message:
+              `Proxy provider returned 403 Forbidden. Whitelist your VPS outbound IP in ProxySeller (reference PROXYSELLER_AUTH_IP=${env.proxySeller.authIp || "unset"}).`,
+          };
+        }
         return { ok: true, softFail: true, status: 403 };
       }
       if (!isSuccessHttp(res.status)) {
         lastMessage = `Probe HTTP ${res.status}`;
         if (res.status < 500 || attempt >= maxAttempts - 1) {
-          return { ok: false, status: res.status, message: lastMessage };
+          return {
+            ok: false,
+            status: res.status,
+            message:
+              res.status === 403
+                ? `Target returned 403 Forbidden (${targetUrl}).`
+                : lastMessage,
+          };
         }
       } else {
         return { ok: true };

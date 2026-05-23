@@ -1,8 +1,7 @@
-# OpenRelay — Nginx reverse proxy (Ubuntu)
-# Replace YOUR_DOMAIN and paths, then:
-#   sudo cp deploy/nginx/openrelay.conf.example /etc/nginx/sites-available/openrelay
-#   sudo ln -s /etc/nginx/sites-available/openrelay /etc/nginx/sites-enabled/
-#   sudo nginx -t && sudo systemctl reload nginx
+# OpenRelay — https://daddyproxy.com
+# sudo cp deploy/nginx/daddyproxy.com.conf.example /etc/nginx/sites-available/daddyproxy
+# sudo ln -sf /etc/nginx/sites-available/daddyproxy /etc/nginx/sites-enabled/
+# sudo nginx -t && sudo systemctl reload nginx
 
 upstream openrelay_next {
     server 127.0.0.1:3000;
@@ -14,14 +13,24 @@ upstream openrelay_api {
     keepalive 32;
 }
 
+# HTTP -> HTTPS
 server {
     listen 80;
     listen [::]:80;
-    server_name YOUR_DOMAIN www.YOUR_DOMAIN;  # e.g. daddyproxy.com www.daddyproxy.com
+    server_name daddyproxy.com www.daddyproxy.com;
+    return 301 https://$host$request_uri;
+}
 
-    # After certbot: listen 443 ssl; and ssl_certificate directives
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name daddyproxy.com www.daddyproxy.com;
 
-    client_max_body_size 2m;
+    # certbot --nginx -d daddyproxy.com -d www.daddyproxy.com
+    ssl_certificate     /etc/letsencrypt/live/daddyproxy.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/daddyproxy.com/privkey.pem;
+
+    client_max_body_size 4m;
 
     # Next.js frontend
     location / {
@@ -38,7 +47,7 @@ server {
         proxy_send_timeout 300s;
     }
 
-    # Express API (unblock + proxy stream)
+    # Express API — must preserve Host + forwarded headers for CORS
     location /api/ {
         proxy_pass http://openrelay_api;
         proxy_http_version 1.1;
@@ -52,18 +61,3 @@ server {
         proxy_buffering off;
     }
 }
-
-# Optional: API on a subdomain (api.YOUR_DOMAIN) instead of /api on the main host
-# server {
-#     listen 80;
-#     server_name api.YOUR_DOMAIN;
-#     location / {
-#         proxy_pass http://openrelay_api;
-#         proxy_http_version 1.1;
-#         proxy_set_header Host $host;
-#         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-#         proxy_set_header X-Forwarded-Proto $scheme;
-#         proxy_read_timeout 300s;
-#         proxy_buffering off;
-#     }
-# }

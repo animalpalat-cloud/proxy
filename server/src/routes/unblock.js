@@ -150,7 +150,9 @@ router.post("/", async (req, res, next) => {
     }
 
     if (probe.ok && probe.softFail) {
-      console.log("[/api/unblock] Probe soft-pass (HTTP 403) — session kept");
+      console.log(
+        "[/api/unblock] Probe soft-pass (target HTTP 403) — session kept; viewer may show site block page",
+      );
     } else if (!probe.ok) {
       console.error("[/api/unblock] Probe failed:", probe.message, probe.status ?? "");
       if (probe.diagnostics) {
@@ -162,7 +164,8 @@ router.post("/", async (req, res, next) => {
         process.env.NODE_ENV !== "production" && probe.diagnostics
           ? probe.diagnostics
           : probe.status ?? probe.details;
-      return sendJson(res, 502, {
+      const status = probe.status === 403 ? 403 : 502;
+      return sendJson(res, status, {
         success: false,
         error:
           probe.message ||

@@ -3,6 +3,7 @@
  */
 const env = require("../config/env");
 const proxySeller = require("./proxySeller");
+const { isOriginAllowed } = require("./allowedOrigins");
 
 const CLIENT_IP_HEADERS = new Set([
   "x-forwarded-for",
@@ -150,17 +151,7 @@ function applyUpstreamHeaders(res, upstream, { streaming = false } = {}) {
 }
 
 function isAllowedBrowserOrigin(origin) {
-  if (!origin || typeof origin !== "string") return false;
-  if (env.frontendOrigins.includes(origin)) return true;
-  try {
-    const { hostname } = new URL(origin);
-    if (!env.isProduction && (hostname === "localhost" || hostname === "127.0.0.1")) {
-      return true;
-    }
-  } catch {
-    return false;
-  }
-  return false;
+  return isOriginAllowed(origin);
 }
 
 function applyProxyCors(res, req) {
