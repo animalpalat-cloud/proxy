@@ -827,5 +827,5 @@ async function createBareClient(server, signal) {
     return new BareClient(server, manifest);
 }
 
-export { BareClient, BareError, Client, createBareClient, fetchManifest, maxRedirects, statusEmpty, statusRedirect };
+export { BareClient as default, BareClient, BareError, Client, createBareClient, fetchManifest, maxRedirects, statusEmpty, statusRedirect };
 //# sourceMappingURL=index.js.map
