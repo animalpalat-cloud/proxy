@@ -276,7 +276,7 @@ export function ProxyInputBar({
 
         setError(
           isOffline
-            ? "Unable to reach the API. Verify the backend is running, BACKEND_URL (Next rewrite), and NEXT_PUBLIC_API_URL if using a separate API host."
+            ? "Unable to reach the API at /api/unblock. On the VPS: confirm PM2 is running the Express app on port 8000, Nginx routes location /api/ to 8000, and do not set NEXT_PUBLIC_API_URL to localhost (use https://daddyproxy.com or leave it unset)."
             : "Something went wrong while contacting the server. Please try again.",
         );
       } finally {

@@ -17,7 +17,7 @@ upstream openrelay_api {
 server {
     listen 80;
     listen [::]:80;
-    server_name YOUR_DOMAIN www.YOUR_DOMAIN;
+    server_name YOUR_DOMAIN www.YOUR_DOMAIN;  # e.g. daddyproxy.com www.daddyproxy.com
 
     # After certbot: listen 443 ssl; and ssl_certificate directives
 
