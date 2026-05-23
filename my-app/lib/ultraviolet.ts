@@ -57,7 +57,21 @@ export async function ensureUltravioletReady(): Promise<void> {
     const connection = new BareMuxConnection("/baremux/worker.js");
     await connection.setTransport("/baremux/bare-client.mjs", [bareServerUrl()]);
 
-    const registration = await navigator.serviceWorker.register("/uv/uv.sw.js", {
+    // Drop broken legacy registration that pointed directly at uv.sw.js (no bundle).
+    for (const reg of await navigator.serviceWorker.getRegistrations()) {
+      if (!reg.scope.includes("/uv/service")) continue;
+      const script =
+        reg.active?.scriptURL ??
+        reg.waiting?.scriptURL ??
+        reg.installing?.scriptURL ??
+        "";
+      if (script.includes("/uv/uv.sw.js") && !script.endsWith("/uv/sw.js")) {
+        await reg.unregister();
+      }
+    }
+
+    // Stock sw.js: importScripts uv.bundle.js (sets self.Ultraviolet) → config → uv.sw.js
+    const registration = await navigator.serviceWorker.register("/uv/sw.js", {
       scope: "/uv/service/",
     });
     await navigator.serviceWorker.ready;

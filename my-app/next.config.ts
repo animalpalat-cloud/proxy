@@ -8,11 +8,26 @@ const nextConfig: NextConfig = {
   async headers() {
     return [
       {
+        source: "/uv/sw.js",
+        headers: [
+          { key: "Service-Worker-Allowed", value: "/" },
+          { key: "Cache-Control", value: "no-cache, no-store, must-revalidate" },
+        ],
+      },
+      {
         source: "/uv/uv.sw.js",
         headers: [
           { key: "Service-Worker-Allowed", value: "/" },
-          { key: "Cache-Control", value: "no-cache" },
+          { key: "Cache-Control", value: "no-cache, no-store, must-revalidate" },
         ],
+      },
+      {
+        source: "/uv/uv.bundle.js",
+        headers: [{ key: "Cache-Control", value: "no-cache, no-store, must-revalidate" }],
+      },
+      {
+        source: "/uv/uv.config.js",
+        headers: [{ key: "Cache-Control", value: "no-cache, no-store, must-revalidate" }],
       },
       {
         source: "/uv/:path*",
