@@ -43,6 +43,41 @@ self.__uv$config = {
 `;
 await writeFile(join(publicDir, "uv", "uv.config.js"), uvConfig);
 
+const uvSw = `/*global UVServiceWorker,__uv$config*/
+importScripts('uv.bundle.js');
+importScripts('uv.config.js');
+importScripts(__uv$config.sw || 'uv.sw.js');
+
+const uv = new UVServiceWorker();
+
+function isBareMuxOrBareAsset(pathname) {
+  return (
+    pathname.startsWith('/baremux/') ||
+    pathname.startsWith('/bare/') ||
+    pathname === '/bare'
+  );
+}
+
+async function handleRequest(event) {
+  const url = new URL(event.request.url);
+
+  if (isBareMuxOrBareAsset(url.pathname)) {
+    return fetch(event.request);
+  }
+
+  if (uv.route(event)) {
+    return await uv.fetch(event);
+  }
+
+  return fetch(event.request);
+}
+
+self.addEventListener('fetch', (event) => {
+  event.respondWith(handleRequest(event));
+});
+`;
+await writeFile(join(publicDir, "uv", "sw.js"), uvSw);
+
 console.log("Copied Ultraviolet → public/uv");
 console.log("Copied bare-mux → public/baremux");
 console.log("Copied bare-client → public/baremux/bare-client.mjs (default export patched)");

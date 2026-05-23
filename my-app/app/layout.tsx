@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { BareUvBootstrap } from "@/components/BareUvBootstrap";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -20,6 +21,7 @@ export default function RootLayout({
         className="min-h-dvh flex flex-col bg-slate-950 text-slate-100 font-sans"
         suppressHydrationWarning
       >
+        <BareUvBootstrap />
         {children}
       </body>
     </html>
