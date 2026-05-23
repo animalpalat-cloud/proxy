@@ -108,7 +108,7 @@ pub async fn ws_tunnel(
     let id = protocol.clone();
 
     Ok(ws
-        .protocols([protocol.as_str()])
+        .protocols([std::borrow::Cow::Owned(protocol.clone())])
         .on_upgrade(move |socket| async move {
             if let Err(err) = run_ws_tunnel(state_clone, id, bare, socket).await {
                 tracing::warn!("websocket tunnel ended: {err}");
@@ -193,6 +193,7 @@ async fn run_ws_tunnel(
                         client.send(Message::Pong(data.into())).await.map_err(|e| AppError::Upstream(e.to_string()))?;
                     }
                     Some(Ok(WsMessage::Close(_))) | None => break,
+                    Some(Ok(WsMessage::Frame(_))) => {}
                     Some(Err(e)) => return Err(AppError::Upstream(e.to_string())),
                 }
             }

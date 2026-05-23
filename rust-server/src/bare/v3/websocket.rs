@@ -42,7 +42,8 @@ async fn run_v3_tunnel(state: AppState, mut client: WebSocket) -> AppResult<()> 
     let first = client
         .next()
         .await
-        .ok_or_else(|| AppError::bad_request("expected connect frame"))??;
+        .ok_or_else(|| AppError::bad_request("expected connect frame"))?
+        .map_err(|e| AppError::bad_request(e.to_string()))?;
 
     let text = match first {
         Message::Text(t) => t,
