@@ -1,8 +1,7 @@
 import type { NextConfig } from "next";
 
-const rustBare =
-  process.env.RUST_BARE_URL?.trim() ||
-  (process.env.NODE_ENV !== "production" ? "http://127.0.0.1:8000" : "");
+/** Same-host Rust Bare — used for rewrites when /bare hits Next (fallback if Nginx is misconfigured). */
+const rustBare = process.env.RUST_BARE_URL?.trim() || "http://127.0.0.1:8000";
 
 const nextConfig: NextConfig = {
   // bare-client needs /bare/ (trailing slash). Default Next behavior 308s /bare/ → /bare.

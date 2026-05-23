@@ -182,12 +182,14 @@ pm2 restart all
 
 ## 6. Nginx reverse proxy
 
-```bash
-sudo cp deploy/nginx/openrelay.conf.example /etc/nginx/sites-available/openrelay
-sudo nano /etc/nginx/sites-available/openrelay
-# Replace YOUR_DOMAIN with your real domain
+`/bare/` **must** reach Rust on port `8000`. If it goes to Next.js instead, you get `308` with `location: /bare` and bare-mux times out.
 
-sudo ln -sf /etc/nginx/sites-available/openrelay /etc/nginx/sites-enabled/
+```bash
+sudo cp deploy/nginx/daddyproxy.com.conf.example /etc/nginx/sites-available/daddyproxy
+sudo nano /etc/nginx/sites-available/daddyproxy
+# Set server_name to your domain
+
+sudo ln -sf /etc/nginx/sites-available/daddyproxy /etc/nginx/sites-enabled/
 sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t
 sudo systemctl reload nginx
@@ -218,15 +220,22 @@ pm2 restart openrelay-api
 ## 7. Verify deployment
 
 ```bash
-curl -sS "https://YOUR_DOMAIN/api/health"
-# {"success":true,"status":"ok"}
+# Rust Bare (direct)
+curl -sS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8000/bare/
+# expect 200
 
-curl -sS -X POST "https://YOUR_DOMAIN/api/unblock" \
-  -H "Content-Type: application/json" \
-  -d '{"url":"https://example.com","region":"us"}'
+# Public Bare manifest — must be 200, NOT 308
+curl -sS -o /dev/null -w "%{http_code}\n" https://YOUR_DOMAIN/bare/
+# expect 200
+
+curl -sS https://YOUR_DOMAIN/bare/ | head -c 120
+# {"versions":["v2","v3"],...}
+
+curl -sSI https://YOUR_DOMAIN/bare/ | grep -iE '^(HTTP|location):'
+# HTTP/1.1 200 — if you see "location: /bare" the request hit Next without Nginx /bare/ routing
 ```
 
-Open the site in a browser, submit a URL, and confirm the new tab loads `/api/proxy/stream-or-view?session=...`.
+Open the site, submit a URL, and confirm the proxied tab loads under `/uv/service/...`.
 
 ---
 
@@ -243,20 +252,21 @@ Open the site in a browser, submit a URL, and confirm the new tab loads `/api/pr
 
 | Symptom | Check |
 |---------|--------|
-| `API_PUBLIC_URL is not set` | Set in `server/.env`, restart `openrelay-api` |
-| CORS errors | `FRONTEND_URL` must exactly match the Next.js origin |
-| 404 on `/api/unblock` | Nginx `location /api/` → port `8000`, PM2 `openrelay-api` running |
-| `ECONNRESET` | Increase `PROXYSELLER_REQUEST_TIMEOUT_MS`, confirm `PROXYSELLER_TLS_INSECURE=true`, verify IP whitelist |
-| `next build` fails | Set `BACKEND_URL` in `.env.production` |
+| `curl /bare/` returns **308** `location: /bare` | Nginx missing `location /bare/` → Rust; reload nginx. Also rebuild Next (`skipTrailingSlashRedirect` + `middleware.ts`) and `pm2 restart openrelay-web` |
+| `bare-mux setTransport timed out` | Fix `/bare/` 308 first; confirm `openrelay-bare` running (`pm2 logs openrelay-bare`) |
+| CORS on Bare | `FRONTEND_ORIGINS` in `rust-server/.env` includes `https://YOUR_DOMAIN` |
+| `next build` fails | Set `RUST_BARE_URL=http://127.0.0.1:8000` in PM2 / `.env.production` |
 
 ---
 
 ## 10. Updating the app
 
 ```bash
-cd /var/www/openrelay
+cd /home/devnigga/proxy   # or your clone path
 git pull
-cd server && npm ci --omit=dev
+cd rust-server && cargo build --release
 cd ../my-app && npm ci && npm run build
 pm2 restart all
+sudo nginx -t && sudo systemctl reload nginx
+curl -sS -o /dev/null -w "%{http_code}\n" https://YOUR_DOMAIN/bare/
 ```

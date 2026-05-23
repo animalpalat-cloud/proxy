@@ -24,6 +24,7 @@ module.exports = {
       exec_mode: "fork",
       env: {
         NODE_ENV: "production",
+        RUST_BARE_URL: "http://127.0.0.1:8000",
       },
       max_memory_restart: "1G",
     },
