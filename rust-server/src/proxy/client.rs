@@ -32,7 +32,7 @@ pub fn build_http_client(proxy: &ProxySellerConfig) -> AppResult<Client> {
         );
 
     if proxy.tls_insecure {
-        builder = builder.tls_danger_accept_invalid_certs(true);
+        builder = builder.danger_accept_invalid_certs(true);
     }
 
     if proxy.alpn_http1_only {
