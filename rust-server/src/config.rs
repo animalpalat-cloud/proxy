@@ -42,7 +42,7 @@ impl Config {
         .collect();
 
         let proxy = ProxySellerConfig {
-            host: env_str("PROXYSELLER_HOST", ""),
+            host: sanitize_proxy_host(&env_str("PROXYSELLER_HOST", "")),
             socks_port: env_u16("PROXYSELLER_SOCKS_PORT", 51093),
             http_port: env_u16("PROXYSELLER_HTTP_PORT", 41093),
             username: env_str("PROXYSELLER_USERNAME", ""),
@@ -70,6 +70,15 @@ impl Config {
             && !self.proxy.username.is_empty()
             && !self.proxy.password.is_empty()
     }
+}
+
+/// Strip accidental scheme/path/port suffixes from `PROXYSELLER_HOST`.
+fn sanitize_proxy_host(raw: &str) -> String {
+    let mut host = raw.trim();
+    for prefix in ["socks5h://", "socks5://", "http://", "https://"] {
+        host = host.strip_prefix(prefix).unwrap_or(host);
+    }
+    host.split('/').next().unwrap_or(host).trim().to_string()
 }
 
 fn env_str(key: &str, default: &str) -> String {

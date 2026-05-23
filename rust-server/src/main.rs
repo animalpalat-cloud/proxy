@@ -62,7 +62,14 @@ async fn main() {
         );
     }
 
-    let app = app::build_app(config.clone()).expect("failed to build app");
+    let app = match app::build_app(config.clone()) {
+        Ok(router) => router,
+        Err(err) => {
+            tracing::error!("failed to build app: {err}");
+            eprintln!("fatal: failed to build app: {err}");
+            std::process::exit(1);
+        }
+    };
 
     tracing::info!(
         "openrelay-bare listening on http://{} (proxy configured: {})",

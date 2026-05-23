@@ -2,9 +2,8 @@ use reqwest::Client;
 
 use crate::config::ProxySellerConfig;
 use crate::error::{AppError, AppResult};
-use crate::proxy::tls::build_destination_tls_config;
 
-/// Build reqwest client: SOCKS5h auth from env + shared destination TLS (ALPN / verify) settings.
+/// Build reqwest client: SOCKS5h via ProxySeller + rustls TLS options from env.
 pub fn build_http_client(proxy: &ProxySellerConfig) -> AppResult<Client> {
     if proxy.host.is_empty() {
         return Err(AppError::ProxyNotConfigured);
@@ -20,21 +19,9 @@ pub fn build_http_client(proxy: &ProxySellerConfig) -> AppResult<Client> {
         ));
     }
 
-    let proxy_url = format!(
-        "socks5h://{}:{}@{}:{}",
-        urlencoding::encode(&proxy.username),
-        urlencoding::encode(&proxy.password),
-        proxy.host,
-        proxy.socks_port
-    );
-
-    let upstream_proxy = reqwest::Proxy::all(&proxy_url)
-        .map_err(|e| AppError::Internal(format!("invalid SOCKS5 proxy URL: {e}")))?;
-
-    let tls = build_destination_tls_config(proxy);
+    let upstream_proxy = build_socks_proxy(proxy)?;
 
     let mut builder = Client::builder()
-        .use_preconfigured_tls(tls)
         .proxy(upstream_proxy)
         .timeout(proxy.request_timeout)
         .connect_timeout(proxy.connect_timeout)
@@ -44,6 +31,14 @@ pub fn build_http_client(proxy: &ProxySellerConfig) -> AppResult<Client> {
              (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
         );
 
+    if proxy.tls_insecure {
+        builder = builder.tls_danger_accept_invalid_certs(true);
+    }
+
+    if proxy.alpn_http1_only {
+        builder = builder.http1_only();
+    }
+
     if proxy.keep_alive {
         builder = builder
             .pool_max_idle_per_host(16)
@@ -52,9 +47,45 @@ pub fn build_http_client(proxy: &ProxySellerConfig) -> AppResult<Client> {
         builder = builder.pool_max_idle_per_host(0);
     }
 
-    builder
-        .build()
-        .map_err(|e| AppError::Internal(format!("reqwest client: {e}")))
+    builder.build().map_err(|e| {
+        AppError::Internal(format!(
+            "reqwest client build failed (socks5h://{}:{} user={}): {e}",
+            proxy.host, proxy.socks_port, proxy.username
+        ))
+    })
+}
+
+/// Parse `socks5h://host:port` and attach SOCKS5 username/password (not embedded in the URL).
+fn build_socks_proxy(proxy: &ProxySellerConfig) -> AppResult<reqwest::Proxy> {
+    let proxy_url = format!("socks5h://{}:{}", proxy.host, proxy.socks_port);
+
+    let parsed = url::Url::parse(&proxy_url).map_err(|e| {
+        AppError::Internal(format!(
+            "invalid SOCKS5 proxy URL {proxy_url:?} (check PROXYSELLER_HOST / PROXYSELLER_SOCKS_PORT): {e}"
+        ))
+    })?;
+
+    if parsed.scheme() != "socks5h" {
+        return Err(AppError::Internal(format!(
+            "proxy URL must use socks5h scheme, got {:?}",
+            parsed.scheme()
+        )));
+    }
+
+    if parsed.host_str().is_none() {
+        return Err(AppError::Internal(format!(
+            "proxy URL missing host: {proxy_url:?}"
+        )));
+    }
+
+    Ok(
+        reqwest::Proxy::all(parsed.as_str()).map_err(|e| {
+            AppError::Internal(format!(
+                "reqwest rejected SOCKS5 proxy {proxy_url:?}: {e}"
+            ))
+        })?
+        .basic_auth(&proxy.username, &proxy.password),
+    )
 }
 
 pub fn retry_delay(proxy: &ProxySellerConfig) -> std::time::Duration {
