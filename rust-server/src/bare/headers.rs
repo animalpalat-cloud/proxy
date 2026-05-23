@@ -413,7 +413,7 @@ pub fn parse_bare_request_v3(headers: &HeaderMap, cache: bool) -> AppResult<Bare
         inner: BareRequest {
             host,
             port,
-            protocol,
+            protocol: protocol.to_string(),
             path,
             headers: bare_headers,
             forward_headers,

@@ -49,7 +49,7 @@ async fn run_v3_tunnel(state: AppState, mut client: WebSocket) -> AppResult<()> 
         _ => return Err(AppError::bad_request("connect must be text frame")),
     };
 
-    let connect: WsConnectMessage = serde_json::from_str(&text)
+    let connect: WsConnectMessage = serde_json::from_str(&text.to_string())
         .map_err(|e| AppError::bad_request(format!("invalid connect json: {e}")))?;
 
     if connect.msg_type != "connect" {
@@ -110,7 +110,7 @@ async fn run_v3_tunnel(state: AppState, mut client: WebSocket) -> AppResult<()> 
                         upstream_tx.send(WsMessage::Binary(data.into())).await.map_err(|e| AppError::Upstream(e.to_string()))?;
                     }
                     Some(Ok(Message::Text(text))) => {
-                        upstream_tx.send(WsMessage::Text(text.into())).await.map_err(|e| AppError::Upstream(e.to_string()))?;
+                        upstream_tx.send(WsMessage::Text(text.to_string().into())).await.map_err(|e| AppError::Upstream(e.to_string()))?;
                     }
                     Some(Ok(Message::Ping(data))) => {
                         upstream_tx.send(WsMessage::Ping(data.into())).await.map_err(|e| AppError::Upstream(e.to_string()))?;
@@ -128,7 +128,7 @@ async fn run_v3_tunnel(state: AppState, mut client: WebSocket) -> AppResult<()> 
                         client.send(Message::Binary(data.into())).await.map_err(|e| AppError::Upstream(e.to_string()))?;
                     }
                     Some(Ok(WsMessage::Text(text))) => {
-                        client.send(Message::Text(text.to_string())).await.map_err(|e| AppError::Upstream(e.to_string()))?;
+                        client.send(Message::Text(text.to_string().into())).await.map_err(|e| AppError::Upstream(e.to_string()))?;
                     }
                     Some(Ok(WsMessage::Ping(data))) => {
                         client.send(Message::Ping(data.into())).await.map_err(|e| AppError::Upstream(e.to_string()))?;

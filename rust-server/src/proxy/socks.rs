@@ -5,7 +5,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_socks::tcp::Socks5Stream;
-use tokio_tungstenite::{client_async, tungstenite::protocol::WebSocketConfig};
+use tokio_tungstenite::client_async;
 
 use crate::config::ProxySellerConfig;
 use crate::error::{AppError, AppResult};
@@ -151,7 +151,7 @@ pub async fn connect_websocket(
         }
     }
 
-    client_async(request, stream, Some(WebSocketConfig::default()))
+    client_async(request, stream)
         .await
         .map_err(|e| AppError::Upstream(format!("WebSocket handshake failed: {e}")))
 }

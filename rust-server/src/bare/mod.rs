@@ -1,4 +1,4 @@
-mod headers;
+pub mod headers;
 mod manifest;
 pub mod v2;
 pub mod v3;

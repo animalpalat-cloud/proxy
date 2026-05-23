@@ -2,7 +2,7 @@ mod fetch;
 mod websocket;
 
 use axum::{
-    extract::{Query, Request, State, WebSocketUpgrade},
+    extract::{FromRequestParts, Query, Request, State, WebSocketUpgrade},
     http::{HeaderMap, Method},
     response::Response,
     routing::any,
@@ -27,7 +27,8 @@ async fn v3_any(
     req: Request<axum::body::Body>,
 ) -> AppResult<Response> {
     if method == Method::GET && is_websocket_upgrade(&headers) {
-        let upgrade = WebSocketUpgrade::from_request(req, &state)
+        let (mut parts, _body) = req.into_parts();
+        let upgrade = WebSocketUpgrade::from_request_parts(&mut parts, &state)
             .await
             .map_err(|e| AppError::Internal(format!("websocket upgrade: {e}")))?;
         return ws_tunnel_v3(upgrade, State(state)).await;

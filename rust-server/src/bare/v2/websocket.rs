@@ -13,7 +13,7 @@ use rand::Rng;
 use serde::Deserialize;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
-use crate::bare::headers::parse_bare_request;
+use crate::bare::headers::{parse_bare_request, BareRequest};
 use crate::error::{AppError, AppResult};
 use crate::proxy::socks::connect_websocket;
 use crate::state::{AppState, WsMetaEntry};
@@ -166,7 +166,7 @@ async fn run_ws_tunnel(
                         upstream_tx.send(WsMessage::Binary(data.into())).await.map_err(|e| AppError::Upstream(e.to_string()))?;
                     }
                     Some(Ok(Message::Text(text))) => {
-                        upstream_tx.send(WsMessage::Text(text.into())).await.map_err(|e| AppError::Upstream(e.to_string()))?;
+                        upstream_tx.send(WsMessage::Text(text.to_string().into())).await.map_err(|e| AppError::Upstream(e.to_string()))?;
                     }
                     Some(Ok(Message::Ping(data))) => {
                         upstream_tx.send(WsMessage::Ping(data.into())).await.map_err(|e| AppError::Upstream(e.to_string()))?;
@@ -184,7 +184,7 @@ async fn run_ws_tunnel(
                         client.send(Message::Binary(data.into())).await.map_err(|e| AppError::Upstream(e.to_string()))?;
                     }
                     Some(Ok(WsMessage::Text(text))) => {
-                        client.send(Message::Text(text.to_string())).await.map_err(|e| AppError::Upstream(e.to_string()))?;
+                        client.send(Message::Text(text.to_string().into())).await.map_err(|e| AppError::Upstream(e.to_string()))?;
                     }
                     Some(Ok(WsMessage::Ping(data))) => {
                         client.send(Message::Ping(data.into())).await.map_err(|e| AppError::Upstream(e.to_string()))?;
