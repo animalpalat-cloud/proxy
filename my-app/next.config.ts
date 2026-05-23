@@ -5,6 +5,9 @@ const rustBare =
   (process.env.NODE_ENV !== "production" ? "http://127.0.0.1:8000" : "");
 
 const nextConfig: NextConfig = {
+  // bare-client needs /bare/ (trailing slash). Default Next behavior 308s /bare/ → /bare.
+  skipTrailingSlashRedirect: true,
+
   async headers() {
     return [
       {
@@ -59,6 +62,15 @@ const nextConfig: NextConfig = {
     }
     const origin = rustBare.replace(/\/$/, "");
     return [
+      // Exact manifest URL (no 308) — Rust serves GET /bare/
+      {
+        source: "/bare",
+        destination: `${origin}/bare/`,
+      },
+      {
+        source: "/bare/",
+        destination: `${origin}/bare/`,
+      },
       {
         source: "/bare/:path*",
         destination: `${origin}/bare/:path*`,

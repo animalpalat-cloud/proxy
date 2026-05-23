@@ -1,23 +1,39 @@
 /**
- * Bare server URL seen by the browser (bare-mux / Ultraviolet).
- * Always same-origin `/bare/` in production (Nginx → Rust :8000).
- * Never hard-code localhost — use the page's actual origin.
+ * Bare server URL for bare-mux / Ultraviolet (browser, same-origin).
+ *
+ * Must end with `/` — @tomphttp/bare-client resolves `./v2/` and `./v3/` relative to
+ * that base. Without a trailing slash, paths become `/v3/` instead of `/bare/v3/`.
+ *
+ * Production: Nginx `location /bare/` → Rust :8000 (preferred).
+ * Dev / single-host: Next `rewrites` when RUST_BARE_URL is set.
  */
+
+/** Canonical pathname (trailing slash required by bare-client). */
+export const BARE_PATH = "/bare/";
+
+function normalizeBareHref(href: string): string {
+  const url = new URL(href);
+  if (!url.pathname.endsWith("/")) {
+    url.pathname = `${url.pathname}/`;
+  }
+  return url.href;
+}
+
 export function getBareServerUrl(): string {
   if (typeof window === "undefined") {
-    return "/bare/";
+    return BARE_PATH;
   }
 
   const fromEnv = process.env.NEXT_PUBLIC_BARE_URL?.trim();
   if (fromEnv) {
     try {
-      return new URL(fromEnv, window.location.origin).href;
+      return normalizeBareHref(new URL(fromEnv, window.location.origin).href);
     } catch {
       // fall through
     }
   }
 
-  return new URL("/bare/", window.location.origin).href;
+  return normalizeBareHref(new URL(BARE_PATH, window.location.origin).href);
 }
 
 /** Site root — outside UV scope (/uv/service/). */

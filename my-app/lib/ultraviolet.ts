@@ -96,8 +96,14 @@ async function verifyBareServerReachable(): Promise<void> {
       method: "GET",
       cache: "no-store",
       credentials: "same-origin",
+      redirect: "manual",
       signal: controller.signal,
     });
+    if (res.status >= 300 && res.status < 400) {
+      throw new Error(
+        `Bare server at ${bareUrl} returned redirect ${res.status} — fix trailing slash (use /bare/) or Nginx /bare/ proxy`,
+      );
+    }
     if (!res.ok) {
       throw new Error(
         `Bare server at ${bareUrl} returned ${res.status} — is openrelay-bare running on port 8000?`,

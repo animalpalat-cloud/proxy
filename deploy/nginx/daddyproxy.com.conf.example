@@ -47,7 +47,11 @@ server {
         proxy_send_timeout 300s;
     }
 
-    # TompHTTP Bare (Rust) — Ultraviolet transport
+    # TompHTTP Bare (Rust) — Ultraviolet transport (/bare/ required by bare-client)
+    location = /bare {
+        return 308 /bare/;
+    }
+
     location /bare/ {
         proxy_pass http://openrelay_bare;
         proxy_http_version 1.1;
