@@ -43,6 +43,10 @@ function mustStreamTarget(targetUrl, hasRange) {
 }
 
 async function pipeVideoToClient(res, req, upstream) {
+  if (res.headersSent) {
+    return;
+  }
+
   youtubeProxy.applyVideoStreamResponseHeaders(res, req, upstream);
   res.flushHeaders?.();
 
@@ -51,7 +55,15 @@ async function pipeVideoToClient(res, req, upstream) {
       if (!res.headersSent) res.status(502).end();
       else res.destroy();
     });
-    await pipeline(upstream.stream, res);
+    try {
+      await pipeline(upstream.stream, res);
+    } catch (err) {
+      if (!res.headersSent) throw err;
+      console.error(
+        "[youtube] Stream error after headers sent:",
+        err instanceof Error ? err.message : err,
+      );
+    }
     return;
   }
   if (upstream.body) {

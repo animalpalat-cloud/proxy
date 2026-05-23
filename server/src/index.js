@@ -15,9 +15,12 @@ app.listen(env.port, env.bindHost, () => {
   const { getAllowedOrigins } = require("./lib/allowedOrigins");
   console.log(`CORS allowed origins: ${[...getAllowedOrigins()].join(", ") || "(none — set FRONTEND_URL)"}`);
   console.log(`Health: ${base.replace(/\/$/, "")}/api/health`);
-  console.log(
-    `ProxySeller: ${proxy.host ? `${proxy.host}:${proxy.port}` : "(not configured — check server/.env)"}`,
-  );
+  const transportLabel = proxy.usesSocks
+    ? `SOCKS5 ${proxy.host}:${proxy.port || proxy.socksPort}`
+    : `HTTP ${proxy.host}:${proxy.port || proxy.httpPort}`;
+  console.log(`ProxySeller: ${proxy.host ? transportLabel : "(not configured — check server/.env)"}`);
+  console.log(`ProxySeller transport mode: ${proxy.transport} scheme=${proxy.scheme}`);
+  console.log(`Proxy timeouts: request=${proxy.requestTimeoutMs}ms probe=${proxy.probeTimeoutMs}ms`);
   if (proxy.authIp) {
     console.log(`ProxySeller whitelist IP (reference): ${proxy.authIp}`);
   }

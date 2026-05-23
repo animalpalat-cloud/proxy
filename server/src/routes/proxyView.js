@@ -12,6 +12,7 @@ const rewriteEngine = require("../lib/rewriteEngine");
 const { resolveSiteTargetUrl } = require("../lib/proxyPaths");
 const { buildServiceWorkerSource } = require("../lib/proxyServiceWorker");
 const youtubeLayer = require("../middleware/youtubeResourceProxy");
+const { handleRouteError } = require("../lib/safeResponse");
 
 const router = express.Router();
 
@@ -196,14 +197,7 @@ async function proxyResourceHandler(req, res, next) {
     );
   } catch (err) {
     sessions.markResourceFailed(sessionId, targetUrl);
-    if (!res.headersSent) {
-      res
-        .status(502)
-        .type("text/plain")
-        .send(err instanceof Error ? err.message : "Proxy resource error.");
-      return;
-    }
-    next(err);
+    handleRouteError(res, req, err, { logTag: "proxy/resource" });
   }
 }
 
@@ -292,14 +286,7 @@ async function proxySiteHandler(req, res, next) {
     );
   } catch (err) {
     sessions.markResourceFailed(sessionId, targetUrl);
-    if (!res.headersSent) {
-      res
-        .status(502)
-        .type("text/plain")
-        .send(err instanceof Error ? err.message : "Proxy site error.");
-      return;
-    }
-    next(err);
+    handleRouteError(res, req, err, { logTag: "proxy/site" });
   }
 }
 
@@ -346,14 +333,7 @@ async function streamSessionThroughProxy(req, res, next) {
       () => bufferFromUpstream(upstream),
     );
   } catch (err) {
-    if (!res.headersSent) {
-      res
-        .status(502)
-        .type("text/plain")
-        .send(err instanceof Error ? err.message : "Proxy error.");
-      return;
-    }
-    next(err);
+    handleRouteError(res, req, err, { logTag: "proxy/view" });
   }
 }
 

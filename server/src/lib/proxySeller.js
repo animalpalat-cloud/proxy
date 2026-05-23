@@ -57,16 +57,19 @@ class ProxyFetchError extends Error {
 }
 
 function buildProxyUri() {
-  const { host, port, scheme, username, password } = env.proxySeller;
-  const base = new URL(`${scheme}://${host}:${port}`);
+  const { host, port, scheme, username, password, usesSocks } = env.proxySeller;
+  const effectiveScheme = usesSocks ? "socks5" : scheme;
+  const base = new URL(`${effectiveScheme}://${host}:${port}`);
   base.username = username;
   base.password = password;
   return base.href;
 }
 
 function buildProxyUriForLog() {
-  const { host, port, scheme, username } = env.proxySeller;
-  return `${scheme}://${username}:***@${host}:${port}`;
+  const { host, port, username, usesSocks, socksPort, httpPort, scheme } = env.proxySeller;
+  const effectiveScheme = usesSocks ? "socks5" : scheme;
+  const effectivePort = port || (usesSocks ? socksPort : httpPort);
+  return `${effectiveScheme}://${username}:***@${host}:${effectivePort}`;
 }
 
 function proxyAuth() {
@@ -367,6 +370,13 @@ function extractNetworkCode(err, seen = new Set()) {
 /**
  * @param {unknown} err
  */
+function isEconnReset(err) {
+  const code = extractNetworkCode(err);
+  if (code === "ECONNRESET" || code === "EPIPE") return true;
+  const message = String(err instanceof Error ? err.message : err || "");
+  return /ECONNRESET|socket hang up|ERR_STREAM_PREMATURE_CLOSE/i.test(message);
+}
+
 function isNetworkRetryable(err) {
   if (!err) return false;
 
@@ -474,14 +484,35 @@ async function fetchOnce(targetUrl, options = {}) {
 
     let axiosRes = null;
     let strategySucceeded = false;
+    const maxStrategyAttempts = 2;
     try {
       const client = getAxiosClientForStrategy(
         strategy.transport,
         strategy.useHttp1Alpn,
         responseType,
       );
-      axiosRes = await client.request(reqConfig);
-      strategySucceeded = true;
+
+      for (let strategyAttempt = 0; strategyAttempt < maxStrategyAttempts; strategyAttempt++) {
+        try {
+          axiosRes = await client.request(reqConfig);
+          strategySucceeded = true;
+          break;
+        } catch (err) {
+          lastRawError = err instanceof Error ? err : new Error(String(err));
+          const isLast = strategyAttempt >= maxStrategyAttempts - 1;
+          if (!isLast && isEconnReset(err)) {
+            if (env.proxyDebug) {
+              console.warn(
+                `[proxySeller] ECONNRESET retry transport=${strategy.transport} target=${targetUrl}`,
+              );
+            }
+            await sleep(env.proxySeller.retryDelayMs);
+            continue;
+          }
+          throw err;
+        }
+      }
+
       if (env.proxyDebug) {
         console.log(
           `[proxySeller] OK transport=${strategy.transport} alpn=${ctx.alpnProfile} status=${axiosRes.status} target=${targetUrl}`,
@@ -522,7 +553,7 @@ async function fetchOnce(targetUrl, options = {}) {
 async function fetchThroughProxy(targetUrl, options = {}) {
   assertConfig();
 
-  const maxAttempts = 3;
+  const maxAttempts = 4;
   let lastError = null;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {

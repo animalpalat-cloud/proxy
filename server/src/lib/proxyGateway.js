@@ -55,6 +55,10 @@ function shouldRewriteBody(contentType, targetUrl) {
  * @param {{ status: number; headers: { get: (k: string) => string | null }; stream?: import('stream').Readable }} upstream
  */
 async function pipeUpstreamToClient(res, req, upstream) {
+  if (res.headersSent) {
+    return;
+  }
+
   res.status(upstream.status);
   applySafeResponseHeaders(res, upstream, { streaming: true });
   applyProxyCors(res, req);
@@ -75,7 +79,22 @@ async function pipeUpstreamToClient(res, req, upstream) {
       await pipeline(upstream.stream, res);
       return;
     }
-    res.end();
+    if (!res.headersSent) {
+      res.end();
+    }
+  } catch (err) {
+    try {
+      upstream.stream?.destroy?.();
+    } catch {
+      /* ignore */
+    }
+    if (!res.headersSent) {
+      throw err;
+    }
+    console.error(
+      "[proxyGateway] Stream error after headers sent:",
+      err instanceof Error ? err.message : err,
+    );
   } finally {
     req.off("close", onClose);
   }
@@ -107,6 +126,10 @@ function sendRewrittenBuffer(res, req, upstream, body, contentType) {
  * @param {() => Promise<Buffer>} loadBuffer
  */
 async function deliverResource(res, req, upstream, ctx, loadBuffer) {
+  if (res.headersSent) {
+    return;
+  }
+
   const contentType = upstream.headers.get("content-type") || "";
   const location = upstream.headers.get("location");
 
