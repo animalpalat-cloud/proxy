@@ -7,6 +7,7 @@ const { Readable } = require("node:stream");
 const tunnel = require("tunnel");
 const axios = require("axios");
 const { HttpsProxyAgent } = require("https-proxy-agent");
+const { SocksProxyAgent } = require("socks-proxy-agent");
 const env = require("../config/env");
 const diagnostics = require("./proxyDiagnostics");
 
@@ -19,18 +20,23 @@ const RETRYABLE_NETWORK = new Set([
   "ECONNRESET",
   "ECONNREFUSED",
   "ETIMEDOUT",
+  "ECONNABORTED",
   "EPIPE",
   "ENOTFOUND",
   "EAI_AGAIN",
   "ERR_SOCKET_CLOSED",
   "ERR_ALPN_NEGOTIATION_FAILED",
+  "ERR_CANCELED",
+  "ERR_STREAM_PREMATURE_CLOSE",
   "EPROTO",
 ]);
 
 const tunnelAgentCache = new Map();
 const hpaCache = new Map();
+const socksAgentCache = new Map();
 const axiosTunnelCache = new Map();
 const axiosHpaCache = new Map();
+const axiosSocksCache = new Map();
 
 class ProxyConfigError extends Error {
   constructor(message, details = []) {
@@ -91,15 +97,25 @@ function alpnProfileLabel(useHttp1Alpn) {
 function clearAgentCaches() {
   tunnelAgentCache.clear();
   hpaCache.clear();
+  socksAgentCache.clear();
   axiosTunnelCache.clear();
   axiosHpaCache.clear();
+  axiosSocksCache.clear();
+}
+
+function usesSocksProxy() {
+  return env.proxySeller.usesSocks || env.proxySeller.scheme === "socks5";
 }
 
 function validateConfig() {
   const details = [];
-  const { host, port, username, password } = env.proxySeller;
+  const { host, port, username, password, usesSocks } = env.proxySeller;
   if (!host) details.push("PROXYSELLER_HOST is missing.");
-  if (!port || port < 1 || port > 65535) details.push("PROXYSELLER_HTTP_PORT is invalid.");
+  if (!port || port < 1 || port > 65535) {
+    details.push(
+      usesSocks ? "PROXYSELLER_SOCKS_PORT is invalid." : "PROXYSELLER_HTTP_PORT is invalid.",
+    );
+  }
   if (!username) details.push("PROXYSELLER_USERNAME is missing.");
   if (!password) details.push("PROXYSELLER_PASSWORD is missing.");
   if (details.length > 0) {
@@ -176,13 +192,53 @@ function getHpaAgent(useHttp1Alpn) {
 }
 
 /**
- * @param {"tunnel"|"hpa"} transport
+ * SOCKS5 agent (mobile/residential proxies — use PROXYSELLER_SCHEME=socks5).
+ * @param {boolean} useHttp1Alpn
+ */
+function getSocksAgent(useHttp1Alpn) {
+  const uri = buildProxyUri();
+  const key = `${uri}:alpn=${useHttp1Alpn ? 1 : 0}:ka=${env.proxySeller.keepAlive ? 1 : 0}`;
+  if (!socksAgentCache.has(key)) {
+    socksAgentCache.set(
+      key,
+      new SocksProxyAgent(uri, {
+        keepAlive: env.proxySeller.keepAlive,
+        timeout: env.proxySeller.requestTimeoutMs,
+        rejectUnauthorized: tlsRejectUnauthorized(),
+        ...buildDestinationTlsOptions(useHttp1Alpn),
+      }),
+    );
+  }
+  return socksAgentCache.get(key);
+}
+
+/**
+ * @param {"tunnel"|"hpa"|"socks"} transport
  * @param {boolean} useHttp1Alpn
  * @param {import('axios').ResponseType} responseType
  */
 function getAxiosClientForStrategy(transport, useHttp1Alpn, responseType) {
   const alpnKey = useHttp1Alpn ? 1 : 0;
   const cacheKey = `${transport}:${responseType}:${buildProxyUri()}:alpn=${alpnKey}`;
+
+  if (transport === "socks") {
+    if (axiosSocksCache.has(cacheKey)) return axiosSocksCache.get(cacheKey);
+    const agent = getSocksAgent(useHttp1Alpn);
+    const client = axios.create({
+      httpAgent: agent,
+      httpsAgent: agent,
+      proxy: false,
+      maxRedirects: 8,
+      timeout: env.proxySeller.requestTimeoutMs,
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
+      validateStatus: () => true,
+      decompress: responseType !== "stream",
+      responseType,
+    });
+    axiosSocksCache.set(cacheKey, client);
+    return client;
+  }
 
   if (transport === "tunnel") {
     if (axiosTunnelCache.has(cacheKey)) return axiosTunnelCache.get(cacheKey);
@@ -222,10 +278,25 @@ function getAxiosClientForStrategy(transport, useHttp1Alpn, responseType) {
 }
 
 /**
- * @returns {Array<{ transport: "tunnel"|"hpa"; useHttp1Alpn: boolean }>}
+ * @returns {Array<{ transport: "tunnel"|"hpa"|"socks"; useHttp1Alpn: boolean }>}
  */
 function buildStrategyLadder() {
   const mode = env.proxySeller.transport;
+
+  if (usesSocksProxy() || mode === "socks") {
+    const socksStrategies = [
+      { transport: "socks", useHttp1Alpn: true },
+      { transport: "socks", useHttp1Alpn: false },
+    ];
+    if (!env.proxySeller.alpnHttp1Only) {
+      return [
+        { transport: "socks", useHttp1Alpn: false },
+        { transport: "socks", useHttp1Alpn: true },
+      ];
+    }
+    return socksStrategies;
+  }
+
   const strategies = [
     { transport: "tunnel", useHttp1Alpn: true },
     { transport: "tunnel", useHttp1Alpn: false },
@@ -256,12 +327,68 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Walk err, cause, and ProxyFetchError diagnostics for a network error code.
+ * @param {unknown} err
+ * @param {Set<unknown>} [seen]
+ * @returns {string | undefined}
+ */
+function extractNetworkCode(err, seen = new Set()) {
+  if (!err || seen.has(err)) return undefined;
+  seen.add(err);
+
+  if (typeof err === "object" && err !== null && "code" in err && err.code != null) {
+    return String(err.code);
+  }
+
+  if (err instanceof ProxyFetchError) {
+    const fromDiag = err.diagnostics?.last?.code;
+    if (fromDiag) return String(fromDiag);
+    const failures = err.diagnostics?.failures;
+    if (Array.isArray(failures)) {
+      for (const f of failures) {
+        if (f?.code) return String(f.code);
+      }
+    }
+    if (err.cause) return extractNetworkCode(err.cause, seen);
+  }
+
+  if (err instanceof Error && err.cause) {
+    return extractNetworkCode(err.cause, seen);
+  }
+
+  if (typeof err === "object" && err !== null && "cause" in err && err.cause) {
+    return extractNetworkCode(err.cause, seen);
+  }
+
+  return undefined;
+}
+
+/**
+ * @param {unknown} err
+ */
 function isNetworkRetryable(err) {
   if (!err) return false;
-  const code = err.code || err.cause?.code;
+
+  const code = extractNetworkCode(err);
   if (code && RETRYABLE_NETWORK.has(code)) return true;
-  return /ECONNRESET|ENOTFOUND|ERR_ALPN|ALPN|socket hang up|socket disconnected before secure TLS/i.test(
-    String(err.message || ""),
+
+  const name =
+    err instanceof Error
+      ? err.name
+      : typeof err === "object" && err !== null && "name" in err
+        ? String(err.name)
+        : "";
+  if (name === "CanceledError" || name === "AbortError") return true;
+
+  if (err instanceof ProxyFetchError && err.status == null) {
+    if (err.cause && isNetworkRetryable(err.cause)) return true;
+    if (err.diagnostics?.last && isNetworkRetryable(err.diagnostics.last)) return true;
+  }
+
+  const message = String(err instanceof Error ? err.message : err || "");
+  return /ECONNRESET|ENOTFOUND|ERR_ALPN|ALPN|ECONNABORTED|ERR_CANCELED|socket hang up|socket disconnected before secure TLS|timeout|canceled/i.test(
+    message,
   );
 }
 
@@ -335,6 +462,7 @@ async function fetchOnce(targetUrl, options = {}) {
 
   const strategies = buildStrategyLadder();
   const failures = [];
+  let lastRawError = null;
 
   for (const strategy of strategies) {
     const ctx = {
@@ -344,13 +472,16 @@ async function fetchOnce(targetUrl, options = {}) {
     };
     diagnostics.logProxyAttempt(ctx);
 
+    let axiosRes = null;
+    let strategySucceeded = false;
     try {
       const client = getAxiosClientForStrategy(
         strategy.transport,
         strategy.useHttp1Alpn,
         responseType,
       );
-      const axiosRes = await client.request(reqConfig);
+      axiosRes = await client.request(reqConfig);
+      strategySucceeded = true;
       if (env.proxyDebug) {
         console.log(
           `[proxySeller] OK transport=${strategy.transport} alpn=${ctx.alpnProfile} status=${axiosRes.status} target=${targetUrl}`,
@@ -358,16 +489,33 @@ async function fetchOnce(targetUrl, options = {}) {
       }
       return wrapAxiosResponse(axiosRes);
     } catch (err) {
+      lastRawError = err instanceof Error ? err : new Error(String(err));
       const formatted = diagnostics.formatProxyError(err, ctx);
       failures.push(formatted);
       diagnostics.logProxyFailure(ctx, err);
+    } finally {
+      if (
+        !strategySucceeded &&
+        axiosRes?.data &&
+        responseType === "stream" &&
+        typeof axiosRes.data.destroy === "function"
+      ) {
+        try {
+          axiosRes.data.destroy();
+        } catch {
+          /* ignore */
+        }
+      }
     }
   }
 
   const last = failures[failures.length - 1];
   throw new ProxyFetchError(
     `Proxy request failed: ${last?.message ?? "all transport strategies failed"}`,
-    { cause: last, diagnostics: { failures, last } },
+    {
+      cause: lastRawError ?? last,
+      diagnostics: { failures, last },
+    },
   );
 }
 
@@ -393,7 +541,9 @@ async function fetchThroughProxy(targetUrl, options = {}) {
 
     const retryable =
       lastError instanceof ProxyFetchError
-        ? lastError.status != null && lastError.status >= 500
+        ? lastError.status == null
+          ? isNetworkRetryable(lastError)
+          : lastError.status >= 500
         : isNetworkRetryable(lastError);
 
     if (!retryable || attempt >= maxAttempts - 1) break;
@@ -428,9 +578,14 @@ async function probeTarget(targetUrl, options = {}) {
   let lastMessage = "Probe failed";
   let lastDiagnostics = null;
 
+  const probeDeadlineMs = Math.max(
+    env.proxySeller.probeTimeoutMs,
+    env.proxySeller.requestTimeoutMs,
+  );
+
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const ac = new AbortController();
-    const t = setTimeout(() => ac.abort(), env.proxySeller.probeTimeoutMs);
+    const t = setTimeout(() => ac.abort(), probeDeadlineMs);
 
     try {
       const res = await fetchThroughProxy(targetUrl, {

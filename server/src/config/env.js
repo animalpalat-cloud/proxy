@@ -36,29 +36,46 @@ function normalizeProxyHost(raw) {
   return h.replace(/\/+$/, "").trim();
 }
 
-function readProxySellerTransport() {
+function readProxySellerScheme() {
+  const raw = (stripEnv(process.env.PROXYSELLER_SCHEME || "http") || "http").toLowerCase();
+  if (raw === "socks5" || raw === "socks") return "socks5";
+  if (raw === "https") return "https";
+  return "http";
+}
+
+function readProxySellerTransport(usesSocks) {
   const raw = (stripEnv(process.env.PROXYSELLER_TRANSPORT || "auto") || "auto").toLowerCase();
+  if (raw === "socks") return "socks";
+  if (usesSocks && raw === "auto") return "socks";
   if (raw === "tunnel" || raw === "hpa") return raw;
   return "auto";
 }
 
 function readProxySeller() {
+  const scheme = readProxySellerScheme();
+  const usesSocks = scheme === "socks5";
+  const httpPort = Number(stripEnv(process.env.PROXYSELLER_HTTP_PORT || "")) || 0;
+  const socksPort = Number(stripEnv(process.env.PROXYSELLER_SOCKS_PORT || "")) || 0;
+  const port = usesSocks ? socksPort || httpPort : httpPort || socksPort;
+
   return {
     host: normalizeProxyHost(process.env.PROXYSELLER_HOST),
-    port: Number(stripEnv(process.env.PROXYSELLER_HTTP_PORT || "")) || 0,
-    socksPort: Number(stripEnv(process.env.PROXYSELLER_SOCKS_PORT || "")) || 0,
+    port,
+    httpPort,
+    socksPort,
+    usesSocks,
     username: stripEnv(process.env.PROXYSELLER_USERNAME || ""),
     password: stripEnv(process.env.PROXYSELLER_PASSWORD || ""),
-    scheme: (stripEnv(process.env.PROXYSELLER_SCHEME || "http") || "http").toLowerCase(),
+    scheme,
     authIp: stripEnv(process.env.PROXYSELLER_AUTH_IP || ""),
     appendCountrySuffix: process.env.PROXYSELLER_APPEND_COUNTRY === "true",
     regionFailover: false,
     userAgent: stripEnv(process.env.PROXYSELLER_USER_AGENT || ""),
-    probeTimeoutMs: Number(process.env.PROXYSELLER_PROBE_TIMEOUT_MS) || 45_000,
-    requestTimeoutMs: Number(process.env.PROXYSELLER_REQUEST_TIMEOUT_MS) || 90_000,
+    probeTimeoutMs: Number(process.env.PROXYSELLER_PROBE_TIMEOUT_MS) || 120_000,
+    requestTimeoutMs: Number(process.env.PROXYSELLER_REQUEST_TIMEOUT_MS) || 120_000,
     retryDelayMs: Number(process.env.PROXYSELLER_RETRY_DELAY_MS) || 800,
     tlsInsecure: process.env.PROXYSELLER_TLS_INSECURE !== "false",
-    transport: readProxySellerTransport(),
+    transport: readProxySellerTransport(usesSocks),
     alpnHttp1Only: process.env.PROXYSELLER_ALPN_HTTP1_ONLY !== "false",
     keepAlive: process.env.PROXYSELLER_KEEP_ALIVE !== "false",
     debug: process.env.PROXY_DEBUG === "true",

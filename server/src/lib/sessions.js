@@ -12,12 +12,23 @@ const store = new Map();
 /** @type {Map<string, number>} */
 const resourceFailCache = new Map();
 
+/** @param {string} sessionId */
+function purgeResourceFailCache(sessionId) {
+  const sid = normalizeSessionId(sessionId);
+  if (!sid) return;
+  const prefix = `${sid}|`;
+  for (const key of resourceFailCache.keys()) {
+    if (key.startsWith(prefix)) resourceFailCache.delete(key);
+  }
+}
+
 function sweep() {
   const now = Date.now();
   for (const [id, rec] of store) {
     if (now - rec.createdAt > SESSION_TTL_MS) {
       store.delete(id);
       cookieJar.clearSession(id);
+      purgeResourceFailCache(id);
     }
   }
   for (const [key, until] of resourceFailCache) {
@@ -66,6 +77,7 @@ function deleteSession(id) {
   if (!sid) return;
   const had = store.delete(sid);
   cookieJar.clearSession(sid);
+  purgeResourceFailCache(sid);
   if (had) {
     console.log(`[sessions] deleted id=${sid.slice(0, 12)}… storeSize=${store.size}`);
   }
@@ -85,6 +97,7 @@ function getSession(id) {
   if (Date.now() - rec.createdAt > SESSION_TTL_MS) {
     store.delete(sid);
     cookieJar.clearSession(sid);
+    purgeResourceFailCache(sid);
     console.log(`[sessions] expired id=${sid.slice(0, 12)}…`);
     return undefined;
   }

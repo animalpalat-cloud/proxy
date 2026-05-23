@@ -15,6 +15,11 @@ function errorHandler(err, req, res, _next) {
     console.error("[server]", err);
   }
 
+  if (res.headersSent) {
+    console.error("[server] Error after response started:", err);
+    return;
+  }
+
   res.status(status).json({
     success: false,
     error: message,
