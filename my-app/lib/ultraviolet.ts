@@ -71,7 +71,11 @@ async function unregisterUvServiceWorkers(): Promise<void> {
 }
 
 async function preloadBareMuxAssets(): Promise<void> {
-  const urls = [getBareMuxWorkerUrl(), getBareClientModuleUrl()];
+  const urls = [
+    getBareMuxWorkerUrl(),
+    getBareClientModuleUrl(),
+    new URL("/baremux/index.mjs", window.location.origin).href,
+  ];
   await Promise.all(
     urls.map((url) =>
       fetch(url, { cache: "no-store", credentials: "same-origin" }).then((res) => {

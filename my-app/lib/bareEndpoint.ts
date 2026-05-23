@@ -20,8 +20,9 @@ export function getBareServerUrl(): string {
   return new URL("/bare/", window.location.origin).href;
 }
 
+/** Site root — outside UV scope (/uv/service/). */
 export function getBareMuxWorkerUrl(): string {
-  return new URL("/baremux/worker.js", window.location.origin).href;
+  return new URL("/baremux-worker.js", window.location.origin).href;
 }
 
 export function getBareClientModuleUrl(): string {

@@ -16,10 +16,18 @@ export function BareUvBootstrap() {
     if (pathname?.startsWith("/uv/service")) return;
 
     startedRef.current = true;
+    let cancelled = false;
+
     void ensureUltravioletReady().catch((err) => {
+      if (cancelled) return;
       console.warn("bare/uv bootstrap:", err);
       startedRef.current = false;
     });
+
+    return () => {
+      cancelled = true;
+      // Do not reset startedRef on Strict Mode remount — init is guarded by globalThis.__openrelayBareUv.
+    };
   }, [pathname]);
 
   return null;
