@@ -199,7 +199,7 @@ fn parse_rfc8941_list(raw: &str) -> Vec<String> {
         .collect()
 }
 
-fn merge_header_list(mut extra: Vec<String>, base: &[&str], cache: bool) -> Vec<String> {
+fn merge_header_list(extra: Vec<String>, base: &[&str], cache: bool) -> Vec<String> {
     let mut out: Vec<String> = base.iter().map(|s| s.to_string()).collect();
     if cache {
         for h in [

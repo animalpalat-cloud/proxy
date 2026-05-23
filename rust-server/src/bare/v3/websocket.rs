@@ -76,7 +76,7 @@ async fn run_v3_tunnel(state: AppState, mut client: WebSocket) -> AppResult<()> 
             .unwrap_or_default()
     );
 
-    let mut extra: Vec<(String, String)> = connect
+    let extra: Vec<(String, String)> = connect
         .headers
         .iter()
         .map(|(k, v)| (k.clone(), v.clone()))
@@ -88,7 +88,7 @@ async fn run_v3_tunnel(state: AppState, mut client: WebSocket) -> AppResult<()> 
     }
 
     let proxy = state.config.proxy.clone();
-    let (mut upstream, _response) =
+    let (upstream, _response) =
         connect_websocket(&proxy, &host, port, &path, use_tls, &extra).await?;
 
     let open = json!({

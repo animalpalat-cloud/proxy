@@ -133,7 +133,7 @@ async fn run_ws_tunnel(
     }
 
     let proxy = state.config.proxy.clone();
-    let (mut upstream, response) = connect_websocket(&proxy, &host, port, &path, use_tls, &extra).await?;
+    let (upstream, response) = connect_websocket(&proxy, &host, port, &path, use_tls, &extra).await?;
 
     let status = response.status().as_u16();
     let status_text = response

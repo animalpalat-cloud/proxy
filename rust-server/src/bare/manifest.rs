@@ -4,7 +4,7 @@ use serde::Serialize;
 use crate::state::AppState;
 
 #[derive(Serialize)]
-struct BareManifest {
+pub struct BareManifest {
     versions: Vec<&'static str>,
     language: &'static str,
     #[serde(rename = "memoryUsage")]
@@ -13,7 +13,7 @@ struct BareManifest {
 }
 
 #[derive(Serialize)]
-struct BareProject {
+pub struct BareProject {
     name: &'static str,
     description: &'static str,
     version: &'static str,

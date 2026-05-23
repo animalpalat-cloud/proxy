@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use rustls::pki_types::ServerName;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
