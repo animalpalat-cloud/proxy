@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Ultraviolet + bare-mux → same-origin /bare/ (Nginx → Rust TompHTTP Bare).
+ * Ultraviolet + bare-mux → same-origin /bare (Nginx → Rust TompHTTP Bare).
  * MessagePort is transferred at most once per page load (getPort from the SW).
  */
 
@@ -189,7 +189,8 @@ async function replyGetPortOnce(
 async function configureBareMuxTransport(
   connection: BareMuxConnectionInstance,
 ): Promise<void> {
-  const bareUrl = getBareServerUrl();
+  // Must not end with "/" — Next.js 308-redirects /bare/ → /bare and breaks setTransport.
+  const bareUrl = getBareServerUrl().replace(/\/+$/, "");
   const clientModule = getBareClientModuleUrl();
 
   await Promise.race([

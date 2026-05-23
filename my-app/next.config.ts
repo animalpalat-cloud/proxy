@@ -3,11 +3,21 @@ import type { NextConfig } from "next";
 /** Same-host Rust Bare — used for rewrites when /bare hits Next (fallback if Nginx is misconfigured). */
 const rustBare = process.env.RUST_BARE_URL?.trim() || "http://127.0.0.1:8000";
 
+/** Strip at build time so a mis-set .env.production cannot bake in `/bare/`. */
+const publicBareUrl = process.env.NEXT_PUBLIC_BARE_URL?.trim().replace(/\/+$/, "");
+
 const nextConfig: NextConfig = {
-  // App routes: no trailing slash. bare-mux uses /bare (see bareEndpoint.ts).
+  // Must match bare-mux URL: /bare (no trailing slash). Next 308s /bare/ → /bare otherwise.
   trailingSlash: false,
-  // Still allow /bare/ if something requests it — middleware proxies before redirect.
   skipTrailingSlashRedirect: true,
+
+  ...(publicBareUrl
+    ? {
+        env: {
+          NEXT_PUBLIC_BARE_URL: publicBareUrl,
+        },
+      }
+    : {}),
 
   async headers() {
     return [
@@ -60,18 +70,13 @@ const nextConfig: NextConfig = {
   async rewrites() {
     const origin = rustBare.replace(/\/$/, "");
     return [
-      // Browser + bare-client use /bare (no slash). Proxy to Rust /bare/ internally.
-      {
-        source: "/bare",
-        destination: `${origin}/bare/`,
-      },
-      {
-        source: "/bare/",
-        destination: `${origin}/bare/`,
-      },
       {
         source: "/bare/:path*",
         destination: `${origin}/bare/:path*`,
+      },
+      {
+        source: "/bare",
+        destination: `${origin}/bare/`,
       },
     ];
   },

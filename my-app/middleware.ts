@@ -1,25 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
 
 /**
- * Proxy /bare/* to Rust before Next's trailing-slash redirect (308 /bare/ → /bare).
- * Nginx should still route /bare/ → :8000 in production; this covers misconfig / dev.
+ * Proxy all /bare* to Rust before Next's trailing-slash redirect (308 /bare/ → /bare).
  */
 const BARE_BACKEND = (
   process.env.RUST_BARE_URL?.trim() || "http://127.0.0.1:8000"
 ).replace(/\/$/, "");
 
+function isBarePath(pathname: string): boolean {
+  return pathname === "/bare" || pathname === "/bare/" || pathname.startsWith("/bare/");
+}
+
 function bareBackendUrl(request: NextRequest): string {
   const { pathname, search } = request.nextUrl;
-  // Rust serves manifest at /bare/; public URL is /bare (no 308).
-  const path = pathname === "/bare" || pathname === "/bare/" ? "/bare/" : pathname;
-  return `${BARE_BACKEND}${path}${search}`;
+  const rustPath = pathname === "/bare" ? "/bare/" : pathname;
+  return `${BARE_BACKEND}${rustPath}${search}`;
 }
 
 export async function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+  if (!isBarePath(pathname)) {
+    return NextResponse.next();
+  }
+
   const upgrade = request.headers.get("upgrade")?.toLowerCase();
   if (upgrade === "websocket") {
-    // Let Next rewrites/nginx pass WebSocket through to Rust.
-    return NextResponse.next();
+    return NextResponse.rewrite(new URL(bareBackendUrl(request)));
   }
 
   const backendUrl = bareBackendUrl(request);

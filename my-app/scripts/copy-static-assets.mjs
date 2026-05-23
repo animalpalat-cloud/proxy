@@ -60,9 +60,16 @@ for (const bareMuxBundle of ["index.mjs", "index.js"]) {
   let bareMux = await readFile(bareMuxPath, "utf8");
   if (bareMux.includes("this.createChannel(e,!0)")) {
     bareMux = bareMux.replaceAll("this.createChannel(e,!0)", "this.createChannel(e,!1)");
-    await writeFile(bareMuxPath, bareMux);
     console.log(`Patched ${bareMuxBundle}: disable duplicate getPort SharedWorker`);
   }
+  if (bareMux.includes("setTransport(e,t,r){await")) {
+    bareMux = bareMux.replace(
+      "setTransport(e,t,r){await",
+      'setTransport(e,t,r){Array.isArray(t)&&typeof t[0]==="string"&&(t[0]=t[0].replace(/\\/+$/, ""));await',
+    );
+    console.log(`Patched ${bareMuxBundle}: strip trailing slash from bare URL arg`);
+  }
+  await writeFile(bareMuxPath, bareMux);
 }
 
 const uvConfig = `/*global Ultraviolet*/
