@@ -1,22 +1,25 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { ensureUltravioletReady } from "@/lib/ultraviolet";
 
 /**
- * Initialize bare-mux + transport on the main site (outside /uv/service/)
- * so SharedWorker is ready before the UV-scoped page opens.
+ * Warm up bare-mux on the homepage once (Strict Mode safe via global singleton in ensureUltravioletReady).
  */
 export function BareUvBootstrap() {
   const pathname = usePathname();
+  const startedRef = useRef(false);
 
   useEffect(() => {
-    if (!pathname?.startsWith("/uv/service")) {
-      void ensureUltravioletReady().catch((err) => {
-        console.warn("bare/uv bootstrap:", err);
-      });
-    }
+    if (startedRef.current) return;
+    if (pathname?.startsWith("/uv/service")) return;
+
+    startedRef.current = true;
+    void ensureUltravioletReady().catch((err) => {
+      console.warn("bare/uv bootstrap:", err);
+      startedRef.current = false;
+    });
   }, [pathname]);
 
   return null;
