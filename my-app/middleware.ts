@@ -1,25 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
+import {
+  isBarePublicPath,
+  stripTrailingSlashPath,
+  toRustBareUpstreamPath,
+} from "./lib/stripTrailingSlash";
 
 /**
- * Proxy all /bare* to Rust before Next's trailing-slash redirect (308 /bare/ → /bare).
+ * Proxy /bare* to Rust. Does not add trailing slashes to browser URLs.
  */
 const BARE_BACKEND = (
   process.env.RUST_BARE_URL?.trim() || "http://127.0.0.1:8000"
 ).replace(/\/$/, "");
 
-function isBarePath(pathname: string): boolean {
-  return pathname === "/bare" || pathname === "/bare/" || pathname.startsWith("/bare/");
-}
-
 function bareBackendUrl(request: NextRequest): string {
   const { pathname, search } = request.nextUrl;
-  const rustPath = pathname === "/bare" ? "/bare/" : pathname;
+  const rustPath = toRustBareUpstreamPath(stripTrailingSlashPath(pathname));
   return `${BARE_BACKEND}${rustPath}${search}`;
 }
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  if (!isBarePath(pathname)) {
+  if (!isBarePublicPath(pathname)) {
     return NextResponse.next();
   }
 

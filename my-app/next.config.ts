@@ -3,8 +3,14 @@ import type { NextConfig } from "next";
 /** Same-host Rust Bare — used for rewrites when /bare hits Next (fallback if Nginx is misconfigured). */
 const rustBare = process.env.RUST_BARE_URL?.trim() || "http://127.0.0.1:8000";
 
-/** Strip at build time so a mis-set .env.production cannot bake in `/bare/`. */
-const publicBareUrl = process.env.NEXT_PUBLIC_BARE_URL?.trim().replace(/\/+$/, "");
+function stripTrailingSlash(url: string): string {
+  return url.trim().replace(/\/+$/, "");
+}
+
+/** Strip at build time so a mis-set .env.production cannot bake in a trailing slash. */
+const publicBareUrl = process.env.NEXT_PUBLIC_BARE_URL?.trim()
+  ? stripTrailingSlash(process.env.NEXT_PUBLIC_BARE_URL.trim())
+  : "";
 
 const nextConfig: NextConfig = {
   // Must match bare-mux URL: /bare (no trailing slash). Next 308s /bare/ → /bare otherwise.

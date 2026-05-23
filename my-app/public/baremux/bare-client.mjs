@@ -609,7 +609,7 @@ function validProtocol(protocol) {
 const clientCtors = [
     ['v3', ClientV3],
 ];
-function __openrelayBarePathBase(server){const u=typeof server==="string"?new URL(server):new URL(server.href);if(!u.pathname.endsWith("/"))u.pathname+="/";return u.href}function __openrelayBareManifestUrl(server){const u=typeof server==="string"?new URL(server):new URL(server.href);const path=u.pathname.replace(/\/+$/,"")||"/bare";return new URL(path,u.origin).href}
+function __openrelayStripTrailingSlash(href){try{const u=new URL(href);const p=u.pathname.replace(/\/+$/,"")||"/bare";u.pathname=p;return u.href}catch{return String(href).replace(/\/+$/,"")||"/bare"}}function __openrelayBarePathBase(server){const u=new URL(__openrelayStripTrailingSlash(typeof server==="string"?server:server.href));if(!u.pathname.endsWith("/"))u.pathname+="/";return u.href}function __openrelayBareManifestUrl(server){return __openrelayStripTrailingSlash(typeof server==="string"?server:server.href)}
 async function fetchManifest(server, signal) {
     const outgoing = await fetch(__openrelayBareManifestUrl(server), { signal, redirect: "manual" });
     if (!outgoing.ok) {

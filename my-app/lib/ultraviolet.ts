@@ -10,6 +10,7 @@ import {
   getBareMuxWorkerUrl,
   getBareServerUrl,
 } from "./bareEndpoint";
+import { stripTrailingSlash } from "./stripTrailingSlash";
 
 type BareMuxConnectionInstance = {
   setTransport(path: string, args: unknown[]): Promise<void>;
@@ -42,7 +43,9 @@ function bareUvGlobal(): BareUvGlobal {
 }
 
 async function loadBareMuxModule(): Promise<{ BareMuxConnection: BareMuxConnectionCtor }> {
-  const moduleUrl = new URL("/baremux/index.mjs", window.location.origin).href;
+  const moduleUrl = stripTrailingSlash(
+    new URL("/baremux/index.mjs", window.location.origin).href,
+  );
   const mod = (await import(
     /* webpackIgnore: true */
     moduleUrl
@@ -74,21 +77,26 @@ async function preloadBareMuxAssets(): Promise<void> {
   const urls = [
     getBareMuxWorkerUrl(),
     getBareClientModuleUrl(),
-    new URL("/baremux/index.mjs", window.location.origin).href,
+    stripTrailingSlash(new URL("/baremux/index.mjs", window.location.origin).href),
   ];
   await Promise.all(
     urls.map((url) =>
-      fetch(url, { cache: "no-store", credentials: "same-origin" }).then((res) => {
-        if (!res.ok) {
-          throw new Error(`failed to load ${url}: ${res.status}`);
-        }
-      }),
+      fetch(url, { cache: "no-store", credentials: "same-origin", redirect: "manual" }).then(
+        (res) => {
+          if (res.status >= 300 && res.status < 400) {
+            throw new Error(`redirect ${res.status} for ${url}`);
+          }
+          if (!res.ok) {
+            throw new Error(`failed to load ${url}: ${res.status}`);
+          }
+        },
+      ),
     ),
   );
 }
 
 async function verifyBareServerReachable(): Promise<void> {
-  const bareUrl = getBareServerUrl();
+  const bareUrl = stripTrailingSlash(getBareServerUrl());
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8_000);
   try {
@@ -101,7 +109,7 @@ async function verifyBareServerReachable(): Promise<void> {
     });
     if (res.status >= 300 && res.status < 400) {
       throw new Error(
-        `Bare server at ${bareUrl} returned redirect ${res.status} — use /bare (no trailing slash) or fix Nginx /bare proxy`,
+        `Bare server at ${bareUrl} returned redirect ${res.status} — URL must be /bare without trailing slash`,
       );
     }
     if (!res.ok) {
@@ -112,7 +120,7 @@ async function verifyBareServerReachable(): Promise<void> {
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
       throw new Error(
-        `Bare server at ${bareUrl} timed out — check Rust backend and Nginx /bare/ proxy`,
+        `Bare server at ${bareUrl} timed out — check Rust backend and Nginx /bare proxy`,
       );
     }
     throw err;
@@ -189,9 +197,8 @@ async function replyGetPortOnce(
 async function configureBareMuxTransport(
   connection: BareMuxConnectionInstance,
 ): Promise<void> {
-  // Must not end with "/" — Next.js 308-redirects /bare/ → /bare and breaks setTransport.
-  const bareUrl = getBareServerUrl().replace(/\/+$/, "");
-  const clientModule = getBareClientModuleUrl();
+  const bareUrl = stripTrailingSlash(getBareServerUrl());
+  const clientModule = stripTrailingSlash(getBareClientModuleUrl());
 
   await Promise.race([
     connection.setTransport(clientModule, [bareUrl]),
@@ -224,13 +231,15 @@ async function runBareUvInit(): Promise<void> {
   installBareMuxServiceWorkerBridge(connection);
   await configureBareMuxTransport(connection);
 
-  await navigator.serviceWorker.register(
+  const swScriptUrl = stripTrailingSlash(
     new URL("/uv/sw.js", window.location.origin).href,
-    { scope: "/uv/service/", type: "classic" },
   );
-  await navigator.serviceWorker.ready;
 
-  // Port is delivered when the SW sends getPort (see bridge). No baremuxinit transfer here.
+  await navigator.serviceWorker.register(swScriptUrl, {
+    scope: "/uv/service/",
+    type: "classic",
+  });
+  await navigator.serviceWorker.ready;
 
   state.initDone = true;
 }

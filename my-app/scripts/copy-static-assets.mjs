@@ -31,8 +31,8 @@ if (!/export\s*\{[^}]*\bdefault\b/.test(bareClient)) {
   );
 }
 
-// Manifest at /bare (no slash); API base /bare/vN/ (bare-client uses trailing slash for relative paths).
-const bareClientPatch = `function __openrelayBarePathBase(server){const u=typeof server==="string"?new URL(server):new URL(server.href);if(!u.pathname.endsWith("/"))u.pathname+="/";return u.href}function __openrelayBareManifestUrl(server){const u=typeof server==="string"?new URL(server):new URL(server.href);const path=u.pathname.replace(/\\/+$/,"")||"/bare";return new URL(path,u.origin).href}`;
+// Browser manifest: /bare (no slash). API paths: /bare/vN/ via directory base.
+const bareClientPatch = `function __openrelayStripTrailingSlash(href){try{const u=new URL(href);const p=u.pathname.replace(/\\/+$/,"")||"/bare";u.pathname=p;return u.href}catch{return String(href).replace(/\\/+$/,"")||"/bare"}}function __openrelayBarePathBase(server){const u=new URL(__openrelayStripTrailingSlash(typeof server==="string"?server:server.href));if(!u.pathname.endsWith("/"))u.pathname+="/";return u.href}function __openrelayBareManifestUrl(server){return __openrelayStripTrailingSlash(typeof server==="string"?server:server.href)}`;
 if (!bareClient.includes("__openrelayBarePathBase")) {
   bareClient = bareClient.replace(
     "async function fetchManifest(server, signal) {",
@@ -50,7 +50,7 @@ if (!bareClient.includes("__openrelayBarePathBase")) {
     "return new ctor(this.server);",
     "return new ctor(__openrelayBarePathBase(this.server).href);",
   );
-  console.log("Patched bare-client.mjs: /bare manifest + /bare/v3/ API base");
+  console.log("Patched bare-client.mjs: stripTrailingSlash + /bare/v3/ API base");
 }
 await writeFile(bareClientDest, bareClient);
 
@@ -99,12 +99,15 @@ const uv = new UVServiceWorker();
 
 const BARE_MUX_BYPASS_FILES = new Set(['worker.js', 'index.mjs', 'bare-client.mjs']);
 
+function isBarePublicPath(pathname) {
+  return pathname === '/bare' || pathname.startsWith('/bare/');
+}
+
 function shouldBypassUltraviolet(url) {
   const { pathname } = url;
   if (
     pathname.startsWith('/baremux/') ||
-    pathname.startsWith('/bare/') ||
-    pathname === '/bare' ||
+    isBarePublicPath(pathname) ||
     pathname === '/baremux-worker.js'
   ) {
     return true;
@@ -136,4 +139,4 @@ await writeFile(join(publicDir, "uv", "sw.js"), uvSw);
 console.log("Copied Ultraviolet → public/uv");
 console.log("Copied bare-mux → public/baremux");
 console.log("Copied bare-client → public/baremux/bare-client.mjs (default export patched)");
-console.log("Wrote public/uv/uv.config.js (prefix /uv/service/, /bare/ via bare-mux)");
+console.log("Wrote public/uv/uv.config.js (prefix /uv/service/, bare at /bare)");

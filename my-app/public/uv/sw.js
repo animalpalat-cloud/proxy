@@ -11,12 +11,15 @@ const uv = new UVServiceWorker();
 
 const BARE_MUX_BYPASS_FILES = new Set(['worker.js', 'index.mjs', 'bare-client.mjs']);
 
+function isBarePublicPath(pathname) {
+  return pathname === '/bare' || pathname.startsWith('/bare/');
+}
+
 function shouldBypassUltraviolet(url) {
   const { pathname } = url;
   if (
     pathname.startsWith('/baremux/') ||
-    pathname.startsWith('/bare/') ||
-    pathname === '/bare' ||
+    isBarePublicPath(pathname) ||
     pathname === '/baremux-worker.js'
   ) {
     return true;
