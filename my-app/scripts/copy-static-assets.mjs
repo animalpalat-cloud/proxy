@@ -29,8 +29,30 @@ if (!/export\s*\{[^}]*\bdefault\b/.test(bareClient)) {
     "export { BareClient,",
     "export { BareClient as default, BareClient,",
   );
-  await writeFile(bareClientDest, bareClient);
 }
+
+// Manifest at /bare (no slash); API base /bare/vN/ (bare-client uses trailing slash for relative paths).
+const bareClientPatch = `function __openrelayBarePathBase(server){const u=typeof server==="string"?new URL(server):new URL(server.href);if(!u.pathname.endsWith("/"))u.pathname+="/";return u.href}function __openrelayBareManifestUrl(server){const u=typeof server==="string"?new URL(server):new URL(server.href);const path=u.pathname.replace(/\\/+$/,"")||"/bare";return new URL(path,u.origin).href}`;
+if (!bareClient.includes("__openrelayBarePathBase")) {
+  bareClient = bareClient.replace(
+    "async function fetchManifest(server, signal) {",
+    `${bareClientPatch}\nasync function fetchManifest(server, signal) {`,
+  );
+  bareClient = bareClient.replace(
+    "const outgoing = await fetch(server, { signal });",
+    'const outgoing = await fetch(__openrelayBareManifestUrl(server), { signal, redirect: "manual" });',
+  );
+  bareClient = bareClient.replace(
+    "this.base = new URL(`./v${version}/`, server);",
+    "this.base = new URL(`./v${version}/`, __openrelayBarePathBase(server));",
+  );
+  bareClient = bareClient.replace(
+    "return new ctor(this.server);",
+    "return new ctor(__openrelayBarePathBase(this.server).href);",
+  );
+  console.log("Patched bare-client.mjs: /bare manifest + /bare/v3/ API base");
+}
+await writeFile(bareClientDest, bareClient);
 
 // Do not register the page-side SW listener that spawns a second SharedWorker on getPort.
 for (const bareMuxBundle of ["index.mjs", "index.js"]) {

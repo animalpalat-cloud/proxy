@@ -101,7 +101,7 @@ async function verifyBareServerReachable(): Promise<void> {
     });
     if (res.status >= 300 && res.status < 400) {
       throw new Error(
-        `Bare server at ${bareUrl} returned redirect ${res.status} — fix trailing slash (use /bare/) or Nginx /bare/ proxy`,
+        `Bare server at ${bareUrl} returned redirect ${res.status} — use /bare (no trailing slash) or fix Nginx /bare proxy`,
       );
     }
     if (!res.ok) {
@@ -199,7 +199,7 @@ async function configureBareMuxTransport(
         () =>
           reject(
             new Error(
-              `bare-mux setTransport timed out (bare=${bareUrl}). Check /baremux/worker.js and /bare/ in Network.`,
+              `bare-mux setTransport timed out (bare=${bareUrl}). Check /baremux-worker.js and GET /bare (no 308) in Network.`,
             ),
           ),
         20_000,

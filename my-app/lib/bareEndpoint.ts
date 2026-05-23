@@ -1,21 +1,19 @@
 /**
  * Bare server URL for bare-mux / Ultraviolet (browser, same-origin).
  *
- * Must end with `/` — @tomphttp/bare-client resolves `./v2/` and `./v3/` relative to
- * that base. Without a trailing slash, paths become `/v3/` instead of `/bare/v3/`.
+ * Use `/bare` without a trailing slash — Next.js 308-redirects `/bare/` → `/bare`,
+ * which breaks bare-mux setTransport (POST / manifest handshake).
  *
- * Production: Nginx `location /bare/` → Rust :8000 (preferred).
- * Dev / single-host: Next `rewrites` when RUST_BARE_URL is set.
+ * bare-client.mjs is patched (copy-static) to fetch the manifest at `/bare` while
+ * resolving API paths under `/bare/v3/`.
  */
 
-/** Canonical pathname (trailing slash required by bare-client). */
-export const BARE_PATH = "/bare/";
+/** Canonical pathname (no trailing slash — matches Next/nginx without 308). */
+export const BARE_PATH = "/bare";
 
 function normalizeBareHref(href: string): string {
   const url = new URL(href);
-  if (!url.pathname.endsWith("/")) {
-    url.pathname = `${url.pathname}/`;
-  }
+  url.pathname = url.pathname.replace(/\/+$/, "") || BARE_PATH;
   return url.href;
 }
 

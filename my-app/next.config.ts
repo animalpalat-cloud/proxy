@@ -4,7 +4,9 @@ import type { NextConfig } from "next";
 const rustBare = process.env.RUST_BARE_URL?.trim() || "http://127.0.0.1:8000";
 
 const nextConfig: NextConfig = {
-  // bare-client needs /bare/ (trailing slash). Default Next behavior 308s /bare/ → /bare.
+  // App routes: no trailing slash. bare-mux uses /bare (see bareEndpoint.ts).
+  trailingSlash: false,
+  // Still allow /bare/ if something requests it — middleware proxies before redirect.
   skipTrailingSlashRedirect: true,
 
   async headers() {
@@ -56,12 +58,9 @@ const nextConfig: NextConfig = {
     ];
   },
   async rewrites() {
-    if (!rustBare) {
-      return [];
-    }
     const origin = rustBare.replace(/\/$/, "");
     return [
-      // Exact manifest URL (no 308) — Rust serves GET /bare/
+      // Browser + bare-client use /bare (no slash). Proxy to Rust /bare/ internally.
       {
         source: "/bare",
         destination: `${origin}/bare/`,

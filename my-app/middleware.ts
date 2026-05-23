@@ -10,7 +10,8 @@ const BARE_BACKEND = (
 
 function bareBackendUrl(request: NextRequest): string {
   const { pathname, search } = request.nextUrl;
-  const path = pathname === "/bare" ? "/bare/" : pathname;
+  // Rust serves manifest at /bare/; public URL is /bare (no 308).
+  const path = pathname === "/bare" || pathname === "/bare/" ? "/bare/" : pathname;
   return `${BARE_BACKEND}${path}${search}`;
 }
 

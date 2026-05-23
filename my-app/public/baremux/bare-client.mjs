@@ -36,7 +36,7 @@ class Client {
      * @param server Bare Server URL provided by BareClient
      */
     constructor(version, server) {
-        this.base = new URL(`./v${version}/`, server);
+        this.base = new URL(`./v${version}/`, __openrelayBarePathBase(server));
     }
 }
 
@@ -609,8 +609,9 @@ function validProtocol(protocol) {
 const clientCtors = [
     ['v3', ClientV3],
 ];
+function __openrelayBarePathBase(server){const u=typeof server==="string"?new URL(server):new URL(server.href);if(!u.pathname.endsWith("/"))u.pathname+="/";return u.href}function __openrelayBareManifestUrl(server){const u=typeof server==="string"?new URL(server):new URL(server.href);const path=u.pathname.replace(/\/+$/,"")||"/bare";return new URL(path,u.origin).href}
 async function fetchManifest(server, signal) {
-    const outgoing = await fetch(server, { signal });
+    const outgoing = await fetch(__openrelayBareManifestUrl(server), { signal, redirect: "manual" });
     if (!outgoing.ok) {
         throw new Error(`Unable to fetch Bare meta: ${outgoing.status} ${await outgoing.text()}`);
     }
@@ -660,7 +661,7 @@ class BareClient {
         // newest-oldest
         for (const [version, ctor] of clientCtors)
             if (this.manifest.versions.includes(version))
-                return new ctor(this.server);
+                return new ctor(__openrelayBarePathBase(this.server).href);
         throw new Error('Unable to find compatible client version. Starting from v2.0.0, @tomphttp/bare-client only supports Bare servers v3+. For more information, see https://github.com/tomphttp/bare-client/');
     }
     createWebSocket(remote, protocols = [], options) {
