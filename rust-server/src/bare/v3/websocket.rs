@@ -139,6 +139,7 @@ async fn run_v3_tunnel(state: AppState, mut client: WebSocket) -> AppResult<()> 
                     }
                     Some(Ok(WsMessage::Close(_))) | None => break,
                     Some(Err(e)) => return Err(AppError::Upstream(e.to_string())),
+                    _ => {}
                 }
             }
         }
