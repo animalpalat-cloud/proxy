@@ -30,12 +30,9 @@ async fn main() {
     let p = &config.proxy;
 
     tracing::info!(
-        "CORS allowed origins: {}",
-        if config.frontend_origins.is_empty() {
-            "(any)".to_string()
-        } else {
-            config.frontend_origins.join(", ")
-        }
+        "openrelay-bare is internal-only — bound to {}:{}, public traffic comes through Next.js",
+        config.bind_host,
+        config.port,
     );
 
     if config.proxy_configured() {

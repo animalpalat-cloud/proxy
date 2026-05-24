@@ -1,16 +1,12 @@
 import type { NextConfig } from "next";
 
-/** Same-host Rust Bare — used for rewrites when /bare hits Next (fallback if Nginx is misconfigured). */
+/**
+ * Architecture: Next.js (public, port 3000) reverse-proxies /bare/* to the
+ * Rust bare server bound to 127.0.0.1:8000. Rust is intentionally NOT exposed
+ * publicly. Everything bare-related on the frontend uses the strictly
+ * relative `/bare` path — no public hostname.
+ */
 const rustBare = process.env.RUST_BARE_URL?.trim() || "http://127.0.0.1:8000";
-
-function stripTrailingSlash(url: string): string {
-  return url.trim().replace(/\/+$/, "");
-}
-
-/** Strip at build time so a mis-set .env.production cannot bake in a trailing slash. */
-const publicBareUrl = process.env.NEXT_PUBLIC_BARE_URL?.trim()
-  ? stripTrailingSlash(process.env.NEXT_PUBLIC_BARE_URL.trim())
-  : "";
 
 /**
  * Build-time worker version stamp. Each deploy gets a fresh SharedWorker URL
@@ -27,7 +23,6 @@ const nextConfig: NextConfig = {
 
   env: {
     NEXT_PUBLIC_BARE_BUILD_ID: buildId,
-    ...(publicBareUrl ? { NEXT_PUBLIC_BARE_URL: publicBareUrl } : {}),
   },
 
   async headers() {

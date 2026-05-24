@@ -75,11 +75,10 @@ nano rust-server/.env
 **Production template** (replace placeholders):
 
 ```env
+# Rust is internal-only — bound to loopback, reached via Next.js middleware.
 BIND_HOST=127.0.0.1
 PORT=8000
 RUST_LOG=info,openrelay_bare=debug
-
-FRONTEND_ORIGINS=https://YOUR_DOMAIN,https://www.YOUR_DOMAIN
 
 PROXYSELLER_HOST=148.113.49.124
 PROXYSELLER_SOCKS_PORT=51093
@@ -254,8 +253,9 @@ Open the site, submit a URL, and confirm the proxied tab loads under `/uv/servic
 |---------|--------|
 | `curl /bare/` returns **308** `location: /bare` | Nginx missing `location /bare/` → Rust; reload nginx. Also rebuild Next (`skipTrailingSlashRedirect` + `middleware.ts`) and `pm2 restart openrelay-web` |
 | `bare-mux setTransport timed out` | Fix `/bare/` 308 first; confirm `openrelay-bare` running (`pm2 logs openrelay-bare`) |
-| CORS on Bare | `FRONTEND_ORIGINS` in `rust-server/.env` includes `https://YOUR_DOMAIN` |
+| CORS on Bare | Not applicable — Rust is internal-only; browser never reaches it directly. CORS is permissive (`Any`) by design. |
 | `next build` fails | Set `RUST_BARE_URL=http://127.0.0.1:8000` in PM2 / `.env.production` |
+| `BIND_HOST=... is not a loopback` warning at startup | Rust forces 127.0.0.1 anyway; set `BIND_HOST=127.0.0.1` in `rust-server/.env` to silence the warning. |
 
 ---
 

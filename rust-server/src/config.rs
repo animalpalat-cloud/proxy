@@ -4,7 +4,6 @@ use std::time::Duration;
 pub struct Config {
     pub bind_host: String,
     pub port: u16,
-    pub frontend_origins: Vec<String>,
     pub proxy: ProxySellerConfig,
 }
 
@@ -29,17 +28,21 @@ pub struct ProxySellerConfig {
 
 impl Config {
     pub fn from_env() -> Self {
-        let bind_host = env_str("BIND_HOST", "127.0.0.1");
+        // Rust is an INTERNAL upstream only — Next.js (port 3000) is the public
+        // face and proxies /bare → 127.0.0.1:8000 server-side. Refuse to bind
+        // anything but the loopback so we can't accidentally expose this to
+        // the public internet, which would bypass Next's middleware entirely.
+        let raw_bind = env_str("BIND_HOST", "127.0.0.1");
+        let bind_host = if is_loopback(&raw_bind) {
+            raw_bind
+        } else {
+            eprintln!(
+                "BIND_HOST={raw_bind:?} is not a loopback address. \
+                 openrelay-bare is internal-only — forcing 127.0.0.1."
+            );
+            "127.0.0.1".to_string()
+        };
         let port = env_u16("PORT", 8000);
-        let frontend_origins = env_str(
-            "FRONTEND_ORIGINS",
-            "http://localhost:3000,https://daddyproxy.com",
-        )
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .collect();
 
         let proxy = ProxySellerConfig {
             host: sanitize_proxy_host(&env_str("PROXYSELLER_HOST", "")),
@@ -60,7 +63,6 @@ impl Config {
         Self {
             bind_host,
             port,
-            frontend_origins,
             proxy,
         }
     }
@@ -70,6 +72,18 @@ impl Config {
             && !self.proxy.username.is_empty()
             && !self.proxy.password.is_empty()
     }
+}
+
+/// Accept the usual loopback spellings (127/8 IPv4, ::1 IPv6, "localhost").
+fn is_loopback(host: &str) -> bool {
+    let trimmed = host.trim().trim_matches(|c| c == '[' || c == ']');
+    if trimmed.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    if let Ok(ip) = trimmed.parse::<std::net::IpAddr>() {
+        return ip.is_loopback();
+    }
+    false
 }
 
 /// Strip accidental scheme/path/port suffixes from `PROXYSELLER_HOST`.

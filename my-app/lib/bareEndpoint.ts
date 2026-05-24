@@ -1,6 +1,11 @@
 /**
- * Bare server URL for bare-mux / Ultraviolet (browser, same-origin).
- * Always use `/bare` without a trailing slash to avoid Next.js 308 redirects.
+ * Bare server URL for bare-mux / Ultraviolet.
+ *
+ * Strictly relative: always `/bare` (no host, no protocol). Next.js middleware
+ * proxies /bare → http://127.0.0.1:8000 server-side. There is intentionally no
+ * `NEXT_PUBLIC_BARE_URL` override — pointing the client at a public hostname
+ * (e.g. `https://daddyproxy.com/bare`) re-introduces the cross-origin /
+ * trailing-slash / redirect issues we just fought through.
  */
 
 import {
@@ -14,16 +19,6 @@ export function getBareServerUrl(): string {
   if (typeof window === "undefined") {
     return BARE_PATH;
   }
-
-  const fromEnv = process.env.NEXT_PUBLIC_BARE_URL?.trim();
-  if (fromEnv) {
-    try {
-      return stripTrailingSlash(new URL(fromEnv, window.location.origin).href);
-    } catch {
-      // fall through
-    }
-  }
-
   return stripTrailingSlash(new URL(BARE_PATH, window.location.origin).href);
 }
 
