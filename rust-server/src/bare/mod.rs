@@ -20,6 +20,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
 
 fn build_cors(origins: &[String]) -> CorsLayer {
     use axum::http::{header, HeaderName, Method};
+    use tower_http::cors::{AllowHeaders, ExposeHeaders};
 
     let mut layer = CorsLayer::new()
         .allow_methods([
@@ -31,33 +32,22 @@ fn build_cors(origins: &[String]) -> CorsLayer {
             Method::HEAD,
             Method::OPTIONS,
         ])
-        .allow_headers([
-            header::CONTENT_TYPE,
-            header::AUTHORIZATION,
-            header::ACCEPT,
-            header::ACCEPT_LANGUAGE,
-            header::ACCEPT_ENCODING,
-            HeaderName::from_static("x-bare-url"),
-            HeaderName::from_static("x-bare-host"),
-            HeaderName::from_static("x-bare-port"),
-            HeaderName::from_static("x-bare-protocol"),
-            HeaderName::from_static("x-bare-path"),
-            HeaderName::from_static("x-bare-headers"),
-            HeaderName::from_static("x-bare-forward-headers"),
-            HeaderName::from_static("x-bare-pass-headers"),
-            HeaderName::from_static("x-bare-pass-status"),
-            HeaderName::from_static("x-bare-id"),
-            HeaderName::from_static("sec-websocket-protocol"),
-        ])
-        .expose_headers([
+        // Accept any header: bare-mux splits x-bare-headers into x-bare-headers-0..N
+        // which can't be enumerated up front, and same-origin requests skip CORS anyway.
+        .allow_headers(AllowHeaders::mirror_request())
+        .expose_headers(ExposeHeaders::list([
             HeaderName::from_static("x-bare-status"),
             HeaderName::from_static("x-bare-status-text"),
             HeaderName::from_static("x-bare-headers"),
             header::CONTENT_ENCODING,
             header::CONTENT_LENGTH,
-        ]);
+            header::CONTENT_TYPE,
+            header::LOCATION,
+            header::SET_COOKIE,
+        ]));
 
     if origins.is_empty() {
+        // No credentials with wildcard origin per CORS spec.
         layer = layer.allow_origin(Any);
     } else {
         use tower_http::cors::AllowOrigin;
@@ -65,8 +55,8 @@ fn build_cors(origins: &[String]) -> CorsLayer {
             .iter()
             .filter_map(|o| o.parse().ok())
             .collect();
-        layer = layer.allow_origin(AllowOrigin::list(parsed));
+        layer = layer.allow_origin(AllowOrigin::list(parsed)).allow_credentials(true);
     }
 
-    layer.allow_credentials(true)
+    layer
 }

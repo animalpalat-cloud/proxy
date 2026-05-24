@@ -1,7 +1,8 @@
 use std::time::Duration;
 
-use axum::{routing::get, Json, Router};
+use axum::{extract::State, routing::get, Json, Router};
 use serde::Serialize;
+use tower::ServiceBuilder;
 use tower_http::{timeout::TimeoutLayer, trace::TraceLayer};
 
 use crate::bare;
@@ -27,14 +28,16 @@ pub fn build_app(config: Config) -> AppResult<Router> {
 
     let request_timeout = config.proxy.request_timeout;
 
+    // Outer timeout = upstream timeout + slack. On expiry tower-http drops the
+    // request and the Axum error mapper returns 504, so the browser never hangs.
+    let layers = ServiceBuilder::new()
+        .layer(TraceLayer::new_for_http())
+        .layer(TimeoutLayer::new(request_timeout + Duration::from_secs(5)));
+
     let app = Router::new()
         .route("/health", get(health))
         .nest("/bare", bare::router(&state))
-        .layer(TimeoutLayer::with_status_code(
-            axum::http::StatusCode::GATEWAY_TIMEOUT,
-            request_timeout + Duration::from_secs(5),
-        ))
-        .layer(TraceLayer::new_for_http())
+        .layer(layers)
         .with_state(state);
 
     Ok(app)
@@ -52,5 +55,3 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
         retry_on_reset: p.retry_on_reset,
     })
 }
-
-use axum::extract::State;

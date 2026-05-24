@@ -13,6 +13,10 @@ pub enum AppError {
     ProxyNotConfigured,
     #[error("upstream error: {0}")]
     Upstream(String),
+    #[error("upstream timeout: {0}")]
+    UpstreamTimeout(String),
+    #[error("upstream connect failed: {0}")]
+    UpstreamConnect(String),
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -51,12 +55,36 @@ impl IntoResponse for AppError {
                 StatusCode::BAD_GATEWAY,
                 json!({ "code": "UPSTREAM_ERROR", "message": msg }),
             ),
+            AppError::UpstreamTimeout(msg) => (
+                StatusCode::GATEWAY_TIMEOUT,
+                json!({ "code": "UPSTREAM_TIMEOUT", "message": msg }),
+            ),
+            AppError::UpstreamConnect(msg) => (
+                StatusCode::BAD_GATEWAY,
+                json!({ "code": "UPSTREAM_CONNECT_FAILED", "message": msg }),
+            ),
             AppError::Internal(msg) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 json!({ "code": "INTERNAL_ERROR", "message": msg }),
             ),
         };
-        (status, Json(body)).into_response()
+        let mut resp = (status, Json(body)).into_response();
+        // Always emit x-bare-* so bare-mux / bare-client treat this as a
+        // structured response rather than throwing on missing manifest fields.
+        let headers = resp.headers_mut();
+        headers.insert(
+            "x-bare-status",
+            axum::http::HeaderValue::from_str(&status.as_u16().to_string()).unwrap(),
+        );
+        headers.insert(
+            "x-bare-status-text",
+            axum::http::HeaderValue::from_static("Upstream Error"),
+        );
+        headers.insert(
+            "x-bare-headers",
+            axum::http::HeaderValue::from_static("{}"),
+        );
+        resp
     }
 }
 

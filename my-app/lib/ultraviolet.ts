@@ -70,14 +70,24 @@ async function loadBareMuxModule(): Promise<{ BareMuxConnection: BareMuxConnecti
   return { BareMuxConnection };
 }
 
-async function unregisterUvServiceWorkers(): Promise<void> {
+/**
+ * Force-update existing UV registrations (without unregister, which would kill
+ * the SW controlling other tabs). `update()` fetches the SW script and, if
+ * changed, installs the new one. Combined with skipWaiting + clients.claim
+ * in the SW, this gives seamless cross-tab upgrades.
+ */
+async function refreshExistingUvRegistrations(): Promise<void> {
   if (!("serviceWorker" in navigator)) return;
-  const regs = await navigator.serviceWorker.getRegistrations();
-  await Promise.all(
-    regs
-      .filter((reg) => reg.scope.includes("/uv/service"))
-      .map((reg) => reg.unregister()),
-  );
+  try {
+    const regs = await navigator.serviceWorker.getRegistrations();
+    await Promise.all(
+      regs
+        .filter((reg) => reg.scope.includes("/uv/service"))
+        .map((reg) => reg.update().catch(() => undefined)),
+    );
+  } catch {
+    /* ignore — update is best-effort */
+  }
 }
 
 /**
@@ -193,30 +203,6 @@ async function verifyBareServerReachable(): Promise<void> {
   }
 }
 
-/**
- * Probe the SharedWorker by attaching an error listener. If the SharedWorker
- * script fails to load (404, network, parse error), the browser emits an
- * `error` event on the parent reference but `port.postMessage` would just
- * hang forever. We surface those errors instead of hanging on setTransport.
- */
-function installSharedWorkerDiagnostics(workerUrl: string): void {
-  try {
-    const probe = new SharedWorker(workerUrl, "bare-mux-worker");
-    probe.onerror = (event) => {
-      console.error(
-        `[bare-mux] SharedWorker (${workerUrl}) load error:`,
-        (event as ErrorEvent).message || event,
-      );
-    };
-  } catch (err) {
-    console.error(
-      `[bare-mux] Failed to construct SharedWorker ${workerUrl} (secure context required):`,
-      err,
-    );
-    throw err;
-  }
-}
-
 function installBareMuxServiceWorkerBridge(
   connection: BareMuxConnectionInstance,
 ): void {
@@ -304,6 +290,49 @@ async function configureBareMuxTransport(
   ]);
 }
 
+/**
+ * Wait for the specific registration to be active.
+ *
+ * IMPORTANT: do NOT use `navigator.serviceWorker.ready` — that waits for an
+ * SW that controls the *current page*. We register with scope `/uv/service/`,
+ * but bootstrap usually runs on `/` (the homepage), so `.ready` would hang
+ * forever waiting for a controller that will never exist.
+ */
+async function waitForRegistrationActive(
+  registration: ServiceWorkerRegistration,
+  timeoutMs = 15_000,
+): Promise<void> {
+  if (registration.active) return;
+
+  const sw = registration.installing ?? registration.waiting ?? registration.active;
+  if (!sw) return;
+
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(
+        new Error(
+          `Ultraviolet SW (${registration.scope}) did not activate within ${timeoutMs}ms (state=${sw.state})`,
+        ),
+      );
+    }, timeoutMs);
+
+    const onState = () => {
+      if (sw.state === "activated" || sw.state === "redundant") {
+        clearTimeout(timer);
+        sw.removeEventListener("statechange", onState);
+        if (sw.state === "redundant") {
+          reject(new Error("Ultraviolet SW became redundant before activation"));
+        } else {
+          resolve();
+        }
+      }
+    };
+
+    sw.addEventListener("statechange", onState);
+    onState();
+  });
+}
+
 async function runBareUvInit(): Promise<void> {
   const state = bareUvGlobal();
   if (state.initDone) return;
@@ -314,15 +343,13 @@ async function runBareUvInit(): Promise<void> {
     );
   }
 
-  await unregisterUvServiceWorkers();
+  await refreshExistingUvRegistrations();
   await verifyBareServerReachable();
 
   const workerUrl = await resolveWorkerUrl();
   state.workerUrl = workerUrl;
 
   await preloadBareMuxAssets(workerUrl);
-
-  installSharedWorkerDiagnostics(workerUrl);
 
   const { BareMuxConnection } = await loadBareMuxModule();
   const connection = new BareMuxConnection(workerUrl);
@@ -335,11 +362,13 @@ async function runBareUvInit(): Promise<void> {
     new URL("/uv/sw.js", window.location.origin).href,
   );
 
-  await navigator.serviceWorker.register(swScriptUrl, {
+  const registration = await navigator.serviceWorker.register(swScriptUrl, {
     scope: "/uv/service/",
     type: "classic",
+    updateViaCache: "none",
   });
-  await navigator.serviceWorker.ready;
+
+  await waitForRegistrationActive(registration);
 
   state.initDone = true;
 }

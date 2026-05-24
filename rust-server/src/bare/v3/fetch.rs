@@ -69,8 +69,14 @@ pub async fn bare_v3_fetch(
     })
     .await
     .map_err(|e| {
-        if is_retryable_transport(&e) {
-            AppError::Upstream(format!("upstream transport error: {e}"))
+        if e.is_timeout() {
+            AppError::UpstreamTimeout(format!("SOCKS5 / upstream timed out: {e}"))
+        } else if e.is_connect() {
+            AppError::UpstreamConnect(format!(
+                "SOCKS5 connect to ProxySeller failed (check IP whitelist + creds): {e}"
+            ))
+        } else if is_retryable_transport(&e) {
+            AppError::Upstream(format!("upstream transport reset: {e}"))
         } else {
             AppError::Upstream(e.to_string())
         }

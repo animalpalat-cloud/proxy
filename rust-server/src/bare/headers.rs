@@ -38,6 +38,19 @@ const BASE_FORWARD: &[&str] = &[
 
 const BASE_PASS: &[&str] = &["content-encoding", "content-length", "last-modified"];
 
+/// Hop-by-hop and transport headers that must never appear in the x-bare-headers JSON.
+/// Per RFC 7230 these are bound to the single TCP hop and would corrupt the bare response.
+const HOP_BY_HOP_HEADERS: &[&str] = &[
+    "connection",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+];
+
 #[derive(Clone, Debug)]
 pub struct BareRequest {
     pub host: String,
@@ -242,6 +255,12 @@ pub fn build_upstream_headers(
     let mut map = reqwest::header::HeaderMap::new();
 
     for (k, v) in &bare.headers {
+        let lower = k.to_ascii_lowercase();
+        if HOP_BY_HOP_HEADERS.contains(&lower.as_str())
+            || FORBIDDEN_FORWARD.contains(&lower.as_str())
+        {
+            continue;
+        }
         if let (Ok(name), Ok(value)) = (
             reqwest::header::HeaderName::from_bytes(k.as_bytes()),
             reqwest::header::HeaderValue::from_str(v),
@@ -251,7 +270,10 @@ pub fn build_upstream_headers(
     }
 
     for name in &bare.forward_headers {
-        if FORBIDDEN_FORWARD.contains(&name.as_str()) {
+        let lower = name.to_ascii_lowercase();
+        if FORBIDDEN_FORWARD.contains(&lower.as_str())
+            || HOP_BY_HOP_HEADERS.contains(&lower.as_str())
+        {
             continue;
         }
         if let Some(value) = incoming.get(name) {
@@ -283,35 +305,54 @@ pub fn apply_bare_response_headers(
         HeaderValue::from_str(remote_status_text).unwrap_or(HeaderValue::from_static("OK")),
     );
 
-    let mut pass_map = HashMap::new();
+    // Bare v3 spec: x-bare-headers carries ALL upstream response headers (except
+    // hop-by-hop). Without this Ultraviolet loses content-type, set-cookie,
+    // location, link headers, etc. and rewrites + cookies stop working.
+    let mut all_headers: HashMap<String, Vec<String>> = HashMap::new();
     for (name, value) in remote_headers.iter() {
         let key = name.as_str().to_string();
         let lower = key.to_ascii_lowercase();
-        if bare.pass_headers.iter().any(|p| p == &lower)
-            || BASE_PASS.contains(&lower.as_str())
-        {
-            if let Ok(v) = value.to_str() {
-                pass_map
-                    .entry(key)
-                    .or_insert_with(Vec::new)
-                    .push(v.to_string());
-            }
+        if HOP_BY_HOP_HEADERS.contains(&lower.as_str()) {
+            continue;
+        }
+        if let Ok(v) = value.to_str() {
+            all_headers
+                .entry(key)
+                .or_default()
+                .push(v.to_string());
         }
     }
 
-    let json = serde_json::to_string(&pass_map).unwrap_or_else(|_| "{}".to_string());
+    let json = serde_json::to_string(&all_headers).unwrap_or_else(|_| "{}".to_string());
     if let Ok(v) = HeaderValue::from_str(&json) {
         response_headers.insert("x-bare-headers", v);
     }
 
-    if let Some(enc) = remote_headers.get(reqwest::header::CONTENT_ENCODING) {
-        if let Ok(v) = HeaderValue::from_bytes(enc.as_bytes()) {
-            response_headers.insert("content-encoding", v);
+    // x-bare-pass-headers (request directive) tells the bare server which
+    // upstream headers should ALSO be sent as raw HTTP headers on this
+    // response. Streaming-relevant ones (content-encoding, content-length)
+    // must always pass through so the browser can decode the body.
+    let mut emit_raw: HashMap<String, &reqwest::header::HeaderValue> = HashMap::new();
+    for (name, value) in remote_headers.iter() {
+        let lower = name.as_str().to_ascii_lowercase();
+        if HOP_BY_HOP_HEADERS.contains(&lower.as_str())
+            || FORBIDDEN_PASS.contains(&lower.as_str())
+        {
+            continue;
+        }
+        let allowed = BASE_PASS.contains(&lower.as_str())
+            || bare.pass_headers.iter().any(|p| p == &lower);
+        if allowed {
+            emit_raw.insert(lower, value);
         }
     }
-    if let Some(len) = remote_headers.get(reqwest::header::CONTENT_LENGTH) {
-        if let Ok(v) = HeaderValue::from_bytes(len.as_bytes()) {
-            response_headers.insert("content-length", v);
+
+    for (lower, value) in emit_raw {
+        if let (Ok(name), Ok(v)) = (
+            HeaderName::from_bytes(lower.as_bytes()),
+            HeaderValue::from_bytes(value.as_bytes()),
+        ) {
+            response_headers.insert(name, v);
         }
     }
 }
