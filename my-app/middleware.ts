@@ -18,6 +18,15 @@ function bareBackendUrl(request: NextRequest): string {
   return `${BARE_BACKEND}${rustPath}${search}`;
 }
 
+type FetchCause = {
+  name?: string;
+  code?: string;
+  errno?: number;
+  address?: string;
+  port?: number;
+  message?: string;
+};
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
   if (!isBarePublicPath(pathname)) {
@@ -48,18 +57,28 @@ export async function middleware(request: NextRequest) {
   try {
     upstream = await fetch(backendUrl, init);
   } catch (err) {
-    // Connection failures (ECONNREFUSED, ECONNRESET, DNS) used to throw out of
-    // the middleware and surface as a generic Next 500 HTML page, hiding the
-    // real reason. Return a structured bare-compatible 502 instead so the
-    // frontend banner and DevTools both show "BARE_UPSTREAM_UNREACHABLE".
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`[bare middleware] fetch to ${backendUrl} failed:`, err);
+    // Node's undici hides the real reason behind "fetch failed" in err.cause
+    // (e.g. ECONNREFUSED address=127.0.0.1 port=8000). Surface it so the
+    // 502 body and pm2 logs both name the actual failure.
+    const e = err as (Error & { cause?: FetchCause }) | undefined;
+    const cause = e?.cause ?? {};
+    const message = e?.message ?? String(err);
+    console.error(
+      `[bare middleware] fetch to ${backendUrl} failed:`,
+      message,
+      cause,
+    );
     return new NextResponse(
       JSON.stringify({
         code: "BARE_UPSTREAM_UNREACHABLE",
         message,
+        cause: {
+          code: cause.code,
+          address: cause.address,
+          port: cause.port,
+          errno: cause.errno,
+        },
         backendUrl,
-        hint: "Check that openrelay-bare is running on port 8000 (pm2 status, pm2 logs openrelay-bare).",
       }),
       {
         status: 502,
