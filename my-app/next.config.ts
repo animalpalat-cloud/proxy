@@ -12,18 +12,23 @@ const publicBareUrl = process.env.NEXT_PUBLIC_BARE_URL?.trim()
   ? stripTrailingSlash(process.env.NEXT_PUBLIC_BARE_URL.trim())
   : "";
 
+/**
+ * Build-time worker version stamp. Each deploy gets a fresh SharedWorker URL
+ * (`/baremux-worker.js?v=<buildId>`), which avoids reusing a stale/broken
+ * SharedWorker registered against the same name from a previous deploy.
+ */
+const buildId =
+  process.env.NEXT_PUBLIC_BARE_BUILD_ID?.trim() || String(Date.now());
+
 const nextConfig: NextConfig = {
   // Must match bare-mux URL: /bare (no trailing slash). Next 308s /bare/ → /bare otherwise.
   trailingSlash: false,
   skipTrailingSlashRedirect: true,
 
-  ...(publicBareUrl
-    ? {
-        env: {
-          NEXT_PUBLIC_BARE_URL: publicBareUrl,
-        },
-      }
-    : {}),
+  env: {
+    NEXT_PUBLIC_BARE_BUILD_ID: buildId,
+    ...(publicBareUrl ? { NEXT_PUBLIC_BARE_URL: publicBareUrl } : {}),
+  },
 
   async headers() {
     return [

@@ -2,11 +2,17 @@
 
 /**
  * Ultraviolet + bare-mux → same-origin /bare (Nginx → Rust TompHTTP Bare).
- * MessagePort is transferred at most once per page load (getPort from the SW).
+ *
+ * Hard rules:
+ *   - bare URL is /bare (NEVER /bare/) — Next.js otherwise 308-redirects and breaks setTransport.
+ *   - SharedWorker URL has ?v=<buildId> so each deploy gets a fresh worker (no stale reuse).
+ *   - Init runs ONCE via globalThis.__openrelayBareUv (survives React Strict Mode).
+ *   - MessagePort is transferred at most once per page load (getPort from the SW).
  */
 
 import {
   getBareClientModuleUrl,
+  getBareMuxWorkerFallbackUrl,
   getBareMuxWorkerUrl,
   getBareServerUrl,
 } from "./bareEndpoint";
@@ -32,6 +38,7 @@ type BareUvGlobal = {
   muxPortDelivered?: boolean;
   getPortReplyPromise?: Promise<void>;
   connection?: BareMuxConnectionInstance;
+  workerUrl?: string;
 };
 
 function bareUvGlobal(): BareUvGlobal {
@@ -73,9 +80,66 @@ async function unregisterUvServiceWorkers(): Promise<void> {
   );
 }
 
-async function preloadBareMuxAssets(): Promise<void> {
+/**
+ * Fetch a worker URL and validate the response is a real bare-mux SharedWorker script.
+ * Returns the URL on success, or throws with a diagnostic message.
+ */
+async function validateBareMuxWorker(url: string): Promise<string> {
+  const res = await fetch(url, {
+    cache: "no-store",
+    credentials: "same-origin",
+    redirect: "manual",
+  });
+
+  if (res.status >= 300 && res.status < 400) {
+    throw new Error(`bare-mux worker URL ${url} returned redirect ${res.status}`);
+  }
+  if (!res.ok) {
+    throw new Error(`bare-mux worker URL ${url} returned HTTP ${res.status}`);
+  }
+
+  const contentType = res.headers.get("content-type")?.toLowerCase() ?? "";
+  const body = await res.text();
+
+  if (contentType.includes("text/html") || body.trimStart().startsWith("<")) {
+    throw new Error(
+      `bare-mux worker URL ${url} returned HTML (likely Next 404 page) — run \`npm run copy-static\` on the server and redeploy`,
+    );
+  }
+
+  if (!body.includes("bare-mux") && !body.includes("onconnect")) {
+    throw new Error(
+      `bare-mux worker URL ${url} does not look like a SharedWorker script (length=${body.length})`,
+    );
+  }
+
+  return url;
+}
+
+async function resolveWorkerUrl(): Promise<string> {
+  const primary = getBareMuxWorkerUrl();
+  try {
+    return await validateBareMuxWorker(primary);
+  } catch (primaryErr) {
+    const fallback = getBareMuxWorkerFallbackUrl();
+    try {
+      const url = await validateBareMuxWorker(fallback);
+      console.warn(
+        `[bare-mux] primary worker ${primary} failed, falling back to ${url}:`,
+        primaryErr,
+      );
+      return url;
+    } catch (fallbackErr) {
+      throw new Error(
+        `bare-mux worker unavailable. Primary=${primary} (${(primaryErr as Error).message}). Fallback=${fallback} (${(fallbackErr as Error).message}).`,
+      );
+    }
+  }
+}
+
+async function preloadBareMuxAssets(workerUrl: string): Promise<void> {
   const urls = [
-    getBareMuxWorkerUrl(),
+    workerUrl,
     getBareClientModuleUrl(),
     stripTrailingSlash(new URL("/baremux/index.mjs", window.location.origin).href),
   ];
@@ -130,9 +194,29 @@ async function verifyBareServerReachable(): Promise<void> {
 }
 
 /**
- * SW bare-mux asks clients for the SharedWorker port once via getPort.
- * Do NOT also postMessage(baremuxinit) with the same port — that neuters it.
+ * Probe the SharedWorker by attaching an error listener. If the SharedWorker
+ * script fails to load (404, network, parse error), the browser emits an
+ * `error` event on the parent reference but `port.postMessage` would just
+ * hang forever. We surface those errors instead of hanging on setTransport.
  */
+function installSharedWorkerDiagnostics(workerUrl: string): void {
+  try {
+    const probe = new SharedWorker(workerUrl, "bare-mux-worker");
+    probe.onerror = (event) => {
+      console.error(
+        `[bare-mux] SharedWorker (${workerUrl}) load error:`,
+        (event as ErrorEvent).message || event,
+      );
+    };
+  } catch (err) {
+    console.error(
+      `[bare-mux] Failed to construct SharedWorker ${workerUrl} (secure context required):`,
+      err,
+    );
+    throw err;
+  }
+}
+
 function installBareMuxServiceWorkerBridge(
   connection: BareMuxConnectionInstance,
 ): void {
@@ -196,6 +280,7 @@ async function replyGetPortOnce(
 
 async function configureBareMuxTransport(
   connection: BareMuxConnectionInstance,
+  workerUrl: string,
 ): Promise<void> {
   const bareUrl = stripTrailingSlash(getBareServerUrl());
   const clientModule = stripTrailingSlash(getBareClientModuleUrl());
@@ -207,7 +292,10 @@ async function configureBareMuxTransport(
         () =>
           reject(
             new Error(
-              `bare-mux setTransport timed out (bare=${bareUrl}). Check /baremux-worker.js and GET /bare (no 308) in Network.`,
+              `bare-mux setTransport timed out. ` +
+                `bare=${bareUrl}, worker=${workerUrl}, client=${clientModule}. ` +
+                `Check SharedWorker errors in DevTools (chrome://inspect/#shared-workers) ` +
+                `and confirm GET ${bareUrl} returns 200 (no 308).`,
             ),
           ),
         20_000,
@@ -220,16 +308,28 @@ async function runBareUvInit(): Promise<void> {
   const state = bareUvGlobal();
   if (state.initDone) return;
 
+  if (typeof SharedWorker === "undefined") {
+    throw new Error(
+      "SharedWorker is not available in this browser/context (requires secure origin).",
+    );
+  }
+
   await unregisterUvServiceWorkers();
   await verifyBareServerReachable();
-  await preloadBareMuxAssets();
+
+  const workerUrl = await resolveWorkerUrl();
+  state.workerUrl = workerUrl;
+
+  await preloadBareMuxAssets(workerUrl);
+
+  installSharedWorkerDiagnostics(workerUrl);
 
   const { BareMuxConnection } = await loadBareMuxModule();
-  const connection = new BareMuxConnection(getBareMuxWorkerUrl());
+  const connection = new BareMuxConnection(workerUrl);
   state.connection = connection;
 
   installBareMuxServiceWorkerBridge(connection);
-  await configureBareMuxTransport(connection);
+  await configureBareMuxTransport(connection, workerUrl);
 
   const swScriptUrl = stripTrailingSlash(
     new URL("/uv/sw.js", window.location.origin).href,

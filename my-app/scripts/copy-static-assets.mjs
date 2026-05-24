@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -20,7 +20,15 @@ const bareClientSrc = join(root, "node_modules", "@tomphttp", "bare-client", "di
 await cp(bareClientSrc, bareClientDest);
 
 // Root-level worker script — outside UV scope (/uv/service/) so the SW never proxies it.
-await cp(join(publicDir, "baremux", "worker.js"), join(publicDir, "baremux-worker.js"));
+const rootWorkerDest = join(publicDir, "baremux-worker.js");
+await cp(join(publicDir, "baremux", "worker.js"), rootWorkerDest);
+const rootWorkerStat = await stat(rootWorkerDest);
+if (rootWorkerStat.size < 1024) {
+  throw new Error(
+    `baremux-worker.js is suspiciously small (${rootWorkerStat.size} bytes) — bare-mux copy likely failed`,
+  );
+}
+console.log(`Wrote public/baremux-worker.js (${rootWorkerStat.size} bytes)`);
 
 // bare-mux setTransport() does: `const { default: BareTransport } = await import(path)`
 let bareClient = await readFile(bareClientDest, "utf8");
@@ -105,6 +113,8 @@ function isBarePublicPath(pathname) {
 
 function shouldBypassUltraviolet(url) {
   const { pathname } = url;
+  // bare-mux assets and Bare API must NEVER be proxied by UV.
+  // Use exact + prefix match, ignore query strings (?v=<buildId>).
   if (
     pathname.startsWith('/baremux/') ||
     isBarePublicPath(pathname) ||

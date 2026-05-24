@@ -17,6 +17,8 @@ function isBarePublicPath(pathname) {
 
 function shouldBypassUltraviolet(url) {
   const { pathname } = url;
+  // bare-mux assets and Bare API must NEVER be proxied by UV.
+  // Use exact + prefix match, ignore query strings (?v=<buildId>).
   if (
     pathname.startsWith('/baremux/') ||
     isBarePublicPath(pathname) ||

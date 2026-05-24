@@ -27,9 +27,30 @@ export function getBareServerUrl(): string {
   return stripTrailingSlash(new URL(BARE_PATH, window.location.origin).href);
 }
 
-/** Site root — outside UV scope (/uv/service/). */
+function appendBuildId(url: string): string {
+  const buildId = process.env.NEXT_PUBLIC_BARE_BUILD_ID?.trim();
+  if (!buildId) return url;
+  const parsed = new URL(url);
+  parsed.searchParams.set("v", buildId);
+  return parsed.href;
+}
+
+/**
+ * Site root — outside UV scope (/uv/service/).
+ * Includes ?v=<buildId> so each deploy gets a fresh SharedWorker
+ * (avoids reusing a broken SharedWorker named "bare-mux-worker" from a previous deploy).
+ */
 export function getBareMuxWorkerUrl(): string {
-  return stripTrailingSlash(new URL("/baremux-worker.js", window.location.origin).href);
+  return appendBuildId(
+    stripTrailingSlash(new URL("/baremux-worker.js", window.location.origin).href),
+  );
+}
+
+/** Fallback path if /baremux-worker.js is missing (npm run copy-static not run). */
+export function getBareMuxWorkerFallbackUrl(): string {
+  return appendBuildId(
+    stripTrailingSlash(new URL("/baremux/worker.js", window.location.origin).href),
+  );
 }
 
 export function getBareClientModuleUrl(): string {
