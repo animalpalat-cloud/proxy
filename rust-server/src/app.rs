@@ -43,12 +43,13 @@ pub fn build_app(config: Config) -> AppResult<(Router, AppState)> {
 
     // Layer order (outer -> inner): CatchPanic, Trace, Timeout. Any panic anywhere
     // becomes a logged 500 with bare-compatible headers instead of an empty hangup.
+    //
+    // NOTE: Do NOT add a top-level `route("/bare", ...)` here — axum 0.8's
+    // `.nest("/bare", inner_router_with_route("/"))` already matches BOTH
+    // `/bare` and `/bare/`. Adding the top-level route panics at startup with
+    // "Overlapping method route. Handler for GET /bare already exists".
     let router = Router::new()
         .route("/health", get(health))
-        // Accept both /bare and /bare/ as the manifest. Without this, /bare (no
-        // trailing slash) returns 404 from .nest("/bare", ...), which has caused
-        // confusing 500s when the Next middleware re-wraps the 404.
-        .route("/bare", get(bare::manifest::manifest))
         .nest("/bare", bare::router(&state))
         .layer(CatchPanicLayer::custom(handle_panic))
         .layer(TraceLayer::new_for_http())
