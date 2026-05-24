@@ -33,6 +33,21 @@ impl AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        // Log EVERY error before responding. Without this a 500/502/504 shows
+        // up in the browser DevTools with no matching line in `pm2 logs`,
+        // which is exactly what made the last round of debugging painful.
+        match &self {
+            AppError::BadRequest(_) | AppError::ProxyNotConfigured => {
+                tracing::warn!(error = %self, "bare error response");
+            }
+            AppError::Upstream(_)
+            | AppError::UpstreamTimeout(_)
+            | AppError::UpstreamConnect(_)
+            | AppError::Internal(_) => {
+                tracing::error!(error = %self, "bare error response");
+            }
+        }
+
         let (status, body) = match &self {
             AppError::BadRequest(msg) => {
                 if msg.starts_with("INVALID_BARE_HEADER") {

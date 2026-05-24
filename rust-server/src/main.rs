@@ -62,14 +62,42 @@ async fn main() {
         );
     }
 
-    let app = match app::build_app(config.clone()) {
-        Ok(router) => router,
+    let (app, state) = match app::build_app(config.clone()) {
+        Ok(parts) => parts,
         Err(err) => {
             tracing::error!("failed to build app: {err}");
             eprintln!("fatal: failed to build app: {err}");
             std::process::exit(1);
         }
     };
+
+    // Fire a one-shot SOCKS5 probe so a misconfigured ProxySeller surfaces
+    // immediately in `pm2 logs` instead of waiting for the first user request
+    // to hit a 502. We don't fail startup on probe failure — the operator can
+    // still see /health and may simply not have configured the proxy yet.
+    if state.config.proxy_configured() {
+        let probe_client = state.http_client.clone();
+        let probe_state = state.clone();
+        tokio::spawn(async move {
+            let result = proxy::probe::run_socks5_probe(&probe_client).await;
+            if result.ok {
+                tracing::info!(
+                    egress_ip = ?result.egress_ip,
+                    latency_ms = result.latency_ms,
+                    "SOCKS5 probe OK"
+                );
+            } else {
+                tracing::error!(
+                    error = ?result.error,
+                    latency_ms = result.latency_ms,
+                    "SOCKS5 probe FAILED — ProxySeller is unreachable, see /health for details"
+                );
+            }
+            probe_state.set_socks5_probe(result);
+        });
+    } else {
+        tracing::warn!("skipping SOCKS5 probe — proxy not configured");
+    }
 
     tracing::info!(
         "openrelay-bare listening on http://{} (proxy configured: {})",

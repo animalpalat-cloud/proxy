@@ -51,6 +51,34 @@ const HOP_BY_HOP_HEADERS: &[&str] = &[
     "upgrade",
 ];
 
+/// Stay under nginx's default `proxy_buffer_size 8k`. If a single response
+/// header exceeds the buffer, nginx returns 502 and we never see the body.
+const MAX_X_BARE_HEADERS_BYTES: usize = 7 * 1024;
+
+/// Headers Ultraviolet (and most consumers) actually need for client-side
+/// rewriting when we have to truncate. Order doesn't matter — this is a
+/// lookup table.
+const MINIMAL_HEADER_KEYS: &[&str] = &[
+    "content-type",
+    "content-length",
+    "content-encoding",
+    "content-disposition",
+    "set-cookie",
+    "location",
+    "link",
+    "content-security-policy",
+    "content-security-policy-report-only",
+    "x-frame-options",
+    "x-content-type-options",
+    "referrer-policy",
+    "cache-control",
+    "etag",
+    "last-modified",
+    "expires",
+    "vary",
+    "www-authenticate",
+];
+
 #[derive(Clone, Debug)]
 pub struct BareRequest {
     pub host: String,
@@ -323,9 +351,29 @@ pub fn apply_bare_response_headers(
         }
     }
 
-    let json = serde_json::to_string(&all_headers).unwrap_or_else(|_| "{}".to_string());
+    // Cap the serialised JSON so a chatty origin (Cloudflare, S3, etc.) can't
+    // produce an x-bare-headers value that exceeds nginx's response buffer and
+    // turns the whole response into a 502.
+    let mut json = serde_json::to_string(&all_headers).unwrap_or_else(|_| "{}".to_string());
+    if json.len() > MAX_X_BARE_HEADERS_BYTES {
+        tracing::warn!(
+            size = json.len(),
+            limit = MAX_X_BARE_HEADERS_BYTES,
+            "x-bare-headers too large, truncating to minimal header set"
+        );
+        let minimal: HashMap<&String, &Vec<String>> = all_headers
+            .iter()
+            .filter(|(k, _)| MINIMAL_HEADER_KEYS.contains(&k.to_ascii_lowercase().as_str()))
+            .collect();
+        json = serde_json::to_string(&minimal).unwrap_or_else(|_| "{}".to_string());
+    }
     if let Ok(v) = HeaderValue::from_str(&json) {
         response_headers.insert("x-bare-headers", v);
+    } else {
+        // HeaderValue::from_str rejects control chars / non-ASCII. Fall back
+        // to a safe empty manifest so bare-mux can still parse the response.
+        tracing::warn!("x-bare-headers JSON contained invalid header bytes, sending empty");
+        response_headers.insert("x-bare-headers", HeaderValue::from_static("{}"));
     }
 
     // x-bare-pass-headers (request directive) tells the bare server which

@@ -187,8 +187,20 @@ async function verifyBareServerReachable(): Promise<void> {
       );
     }
     if (!res.ok) {
+      // Read the body so the actual Rust/middleware error (which now includes a
+      // structured `code` + `message`) is shown in the UI banner. Without this
+      // we'd be left guessing whether the 5xx came from Rust, Next middleware,
+      // Nginx, or Cloudflare.
+      let detail = "";
+      try {
+        const text = await res.text();
+        detail = text.slice(0, 300).trim();
+      } catch {
+        detail = "(unable to read response body)";
+      }
       throw new Error(
-        `Bare server at ${bareUrl} returned ${res.status} — is openrelay-bare running on port 8000?`,
+        `Bare server at ${bareUrl} returned ${res.status}. ` +
+          `Response: ${detail || "(empty body)"}`,
       );
     }
   } catch (err) {

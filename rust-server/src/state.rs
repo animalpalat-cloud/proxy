@@ -2,16 +2,19 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
+use parking_lot::RwLock;
 use reqwest::Client;
 
 use crate::bare::headers::BareRequest;
 use crate::config::Config;
+use crate::proxy::probe::Socks5ProbeResult;
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: Config,
     pub http_client: Client,
     pub ws_meta: Arc<DashMap<String, WsMetaEntry>>,
+    socks5_probe: Arc<RwLock<Option<Socks5ProbeResult>>>,
 }
 
 #[derive(Clone)]
@@ -35,7 +38,16 @@ impl AppState {
             config,
             http_client,
             ws_meta: Arc::new(DashMap::new()),
+            socks5_probe: Arc::new(RwLock::new(None)),
         }
+    }
+
+    pub fn set_socks5_probe(&self, probe: Socks5ProbeResult) {
+        *self.socks5_probe.write() = Some(probe);
+    }
+
+    pub fn socks5_probe(&self) -> Option<Socks5ProbeResult> {
+        self.socks5_probe.read().clone()
     }
 
     pub fn store_ws_meta(&self, id: String, entry: WsMetaEntry) {
